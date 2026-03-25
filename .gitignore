@@ -1,0 +1,23 @@
+# python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# virtual env (optional, uv typically uses its own cache)
+.venv/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# KDE/Nobara
+.directory

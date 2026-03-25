@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gguf-fit"
+version = "3.0.0"
+description = "Detect hardware and choose GGUF models that fit"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "gguf-fit"},
+]
+
+[project.scripts]
+gguf-fit = "gguf_fit.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/gguf-fit/gguf-fit"
+
+[tool.setuptools.packages.find]
+where = ["src"]
