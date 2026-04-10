@@ -3,18 +3,19 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gguf-fit"
-version = "3.0.0"
+name = "clanker"
+version = "4.0.0"
 description = "Detect hardware and choose GGUF models that fit"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "gguf-fit"},
+    {name = "clanker"},
 ]
 
 [project.scripts]
-gguf-fit = "gguf_fit.__main__:main"
+clanker = "clanker.__main__:main"
+gguf-fit = "clanker.__main__:main"  # deprecated, remove in 5.x
 
 [project.urls]
 Homepage = "https://github.com/gguf-fit/gguf-fit"

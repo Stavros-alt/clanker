@@ -10,17 +10,48 @@ import subprocess
 import sys
 import urllib.request
 
-__version__ = "3.1.0"
+__version__ = "4.0.0"
 
 # bits per weight. i guess?
 
 QUANTS = {
-    "IQ1_S": 1.56, "IQ2_XXS": 2.06, "IQ2_XS": 2.31,
-    "Q2_K": 2.96, "IQ3_XXS": 3.06, "IQ4_XS": 3.85,
-    "Q3_K_S": 3.50, "Q3_K_M": 3.91,
-    "Q4_0": 4.55, "Q4_K_S": 4.59, "Q4_K_M": 4.85,
-    "Q5_0": 5.54, "Q5_K_S": 5.54, "Q5_K_M": 5.69,
-    "Q6_K": 6.57, "Q8_0": 8.50, "F16": 16.00,
+    # Legacy base types
+    "Q4_0": 4.34,
+    "Q4_1": 4.78,
+    "Q5_0": 5.21,
+    "Q5_1": 5.65,
+    # K-quants
+    "Q2_K": 2.96,
+    "Q2_K_S": 2.96,
+    "Q3_K_S": 3.41,
+    "Q3_K_M": 3.74,
+    "Q3_K_L": 4.03,
+    "Q4_K_S": 4.59,
+    "Q4_K_M": 4.85,
+    "Q5_K_S": 5.54,
+    "Q5_K_M": 5.69,
+    "Q6_K": 6.57,
+    "Q8_0": 8.50,
+    # IQ series
+    "IQ1_S": 1.56,
+    "IQ1_M": 1.75,
+    "IQ2_XXS": 2.06,
+    "IQ2_XS": 2.31,
+    "IQ2_S": 2.50,
+    "IQ2_M": 2.70,
+    "IQ3_XXS": 3.06,
+    "IQ3_XS": 3.30,
+    "IQ3_S": 3.44,
+    "IQ3_M": 3.66,
+    "IQ4_XS": 3.85,
+    "IQ4_NL": 4.50,
+    # Ternary (new)
+    "TQ1_0": 1.69,
+    "TQ2_0": 2.06,
+    # Full precision
+    "BF16": 16.00,
+    "F16": 16.00,
+    "F32": 32.00,
 }
 
 DEFAULT_QUANTS = ["Q3_K_M", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"]
@@ -28,10 +59,77 @@ RECOMMENDED = "Q4_K_M"
 
 # quality ranking: higher index = lower quality
 QUANT_QUALITY_ORDER = [
-    "F16", "Q8_0", "Q6_K", "Q5_K_M", "Q5_K_S", "Q5_0",
-    "Q4_K_M", "Q4_K_S", "Q4_0", "Q3_K_M", "Q3_K_S",
-    "Q2_K", "IQ4_XS", "IQ3_XXS", "IQ2_XS", "IQ2_XXS", "IQ1_S",
+    "F32",
+    "BF16",
+    "F16",
+    "Q8_0",
+    "Q6_K",
+    "Q5_K_M",
+    "Q5_K_S",
+    "Q5_1",
+    "Q5_0",
+    "Q4_K_M",
+    "Q4_K_S",
+    "Q4_1",
+    "Q4_0",
+    "IQ4_NL",
+    "IQ4_XS",
+    "Q3_K_L",
+    "Q3_K_M",
+    "Q3_K_S",
+    "IQ3_M",
+    "IQ3_S",
+    "IQ3_XS",
+    "IQ3_XXS",
+    "Q2_K",
+    "Q2_K_S",
+    "IQ2_M",
+    "IQ2_S",
+    "IQ2_XS",
+    "IQ2_XXS",
+    "TQ2_0",
+    "IQ1_M",
+    "TQ1_0",
+    "IQ1_S",
 ]
+
+# UD aliases — for ranking, map to nearest standard quant
+UD_ALIASES = {
+    # strip prefix, map to nearest standard quant for ranking
+    "UD-IQ1_S": "IQ1_S",
+    "UD-IQ1_M": "IQ1_M",
+    "UD-IQ2_XXS": "IQ2_XXS",
+    "UD-IQ2_XS": "IQ2_XS",
+    "UD-IQ2_S": "IQ2_S",
+    "UD-IQ2_M": "IQ2_M",
+    "UD-IQ3_XXS": "IQ3_XXS",
+    "UD-IQ3_XS": "IQ3_XS",
+    "UD-IQ3_S": "IQ3_S",
+    "UD-IQ3_M": "IQ3_M",
+    "UD-IQ4_XS": "IQ4_XS",
+    "UD-IQ4_NL": "IQ4_NL",
+    "UD-Q2_K_XL": "Q2_K",
+    "UD-Q3_K_XL": "Q3_K_M",  # XL = higher quality embeddings
+    "UD-Q4_K_XL": "Q4_K_M",
+    "UD-Q5_K_XL": "Q5_K_M",
+    "UD-Q6_K_XL": "Q6_K",
+    "UD-Q8_0_XL": "Q8_0",
+}
+
+
+def resolve_quant(quant_key):
+    """Returns the base quant for a UD key, or the key itself."""
+    return UD_ALIASES.get(quant_key, quant_key)
+
+
+def get_bpw(quant_key):
+    """Get bpw for a quant key, resolving UD aliases."""
+    base = resolve_quant(quant_key)
+    return QUANTS.get(base, None)
+
+
+def is_dynamic_quant(quant_key):
+    return quant_key in UD_ALIASES
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -51,16 +149,20 @@ def detect_ram():
         elif s == "Darwin":
             o = subprocess.check_output(
                 ["sysctl", "-n", "hw.memsize"],
-                text=True, stderr=subprocess.DEVNULL,
+                text=True,
+                stderr=subprocess.DEVNULL,
             )
             return int(o.strip()) / (1024**3)
         elif s == "Windows":
             o = subprocess.check_output(
                 [
-                    "powershell", "-NoProfile", "-Command",
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
                     "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",
                 ],
-                text=True, stderr=subprocess.DEVNULL,
+                text=True,
+                stderr=subprocess.DEVNULL,
             )
             return int(o.strip()) / (1024**3)
     except Exception:
@@ -81,7 +183,8 @@ def detect_gpus():
                     "--query-gpu=name,memory.total",
                     "--format=csv,noheader,nounits",
                 ],
-                text=True, stderr=subprocess.DEVNULL,
+                text=True,
+                stderr=subprocess.DEVNULL,
             )
             for ln in o.strip().splitlines():
                 p = [x.strip() for x in ln.split(",")]
@@ -123,7 +226,8 @@ def detect_gpus():
         try:
             o = subprocess.check_output(
                 ["rocm-smi", "--showmeminfo", "vram", "--json"],
-                text=True, stderr=subprocess.DEVNULL,
+                text=True,
+                stderr=subprocess.DEVNULL,
             )
             data = json.loads(o)
             for key, val in data.items():
@@ -151,7 +255,8 @@ def detect_gpus():
             try:
                 chip = subprocess.check_output(
                     ["sysctl", "-n", "machdep.cpu.brand_string"],
-                    text=True, stderr=subprocess.DEVNULL,
+                    text=True,
+                    stderr=subprocess.DEVNULL,
                 ).strip()
             except Exception:
                 chip = "Apple Silicon"
@@ -179,13 +284,15 @@ def default_overhead(kind, mem_gb):
 
 # additional runtime overhead beyond model weights (KV cache, buffers, etc.)
 # this is what actually gets used at runtime, separate from the 2GB base overhead
-RUNTIME_OVERHEAD_GB = 1.5  # accounts for KV cache (~800MB) + compute buffers (~500MB) + misc
+RUNTIME_OVERHEAD_GB = (
+    1.5  # accounts for KV cache (~800MB) + compute buffers (~500MB) + misc
+)
 
 
 def max_billions(mem_gb, quant, overhead_gb):
     # max model size (billion params) that fits at given quantization.
     # math. unfortunately necessary.
-    bpw = QUANTS[quant]
+    bpw = get_bpw(quant)
     avail = mem_gb - overhead_gb
     return max(0.0, avail * 8.0 / bpw)
 
@@ -218,7 +325,7 @@ def fetch_gguf_files(repo_id):
     try:
         req = urllib.request.Request(
             api_url,
-            headers={"User-Agent": "gguf-fit/1.1"},
+            headers={"User-Agent": f"clanker/{__version__}"},
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode())
@@ -237,10 +344,12 @@ def fetch_gguf_files(repo_id):
             continue
         size_bytes = item.get("size", 0)
         size_gb = size_bytes / (1024**3)
-        gguf_files.append({
-            "name": path,
-            "size_gb": round(size_gb, 2),
-        })
+        gguf_files.append(
+            {
+                "name": path,
+                "size_gb": round(size_gb, 2),
+            }
+        )
 
     if not gguf_files:
         return None, "no GGUF files found in repository"
@@ -249,13 +358,19 @@ def fetch_gguf_files(repo_id):
 
 
 def infer_quant_from_filename(filename):
-    # extract quantization type from gguf filename. hopefully.
-    name = filename.upper()
-    # check for Qn_K_M etc first (more specific)
-    for q in QUANTS:
-        if q in name:
+    name = os.path.basename(filename).upper()
+    name_noext = name.rsplit(".GGUF", 1)[0]
+
+    # Check UD aliases first (most specific)
+    for ud_key, base_quant in UD_ALIASES.items():
+        if ud_key in name_noext:
+            return ud_key  # return the UD key, caller resolves via UD_ALIASES
+
+    # Standard quants — longest match first to avoid Q4 matching Q4_K_M
+    for q in sorted(QUANTS.keys(), key=len, reverse=True):
+        if q in name_noext:
             return q
-    # fallback: check for Qn_n patterns
+
     return None
 
 
@@ -294,7 +409,7 @@ def find_best_fit(gguf_files, mem_available, overhead_gb):
         return None, None, None
 
     # prefer higher quant (better quality) - sort by bpw descending
-    suitable.sort(key=lambda x: QUANTS.get(x[1], 0), reverse=True)
+    suitable.sort(key=lambda x: get_bpw(x[1]) or 0, reverse=True)
     best = suitable[0]
     return best[0], best[1], best[0]["size_gb"]
 
@@ -302,186 +417,6 @@ def find_best_fit(gguf_files, mem_available, overhead_gb):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # model discovery. api, i'm begging you.
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-def get_useful_type(model_data: dict) -> str:
-    # pick the most useful type tag from model metadata.
-    # this is subjective and probably wrong, but here we are.
-    tags = [t.lower() for t in model_data.get("tags", [])]
-    pipeline = model_data.get("pipeline_tag", "")
-
-    # priority order: most specific/useful first
-    if "uncensored" in tags or "abliterated" in tags:
-        return "uncensored"
-    if any(t in tags for t in ["code", "coding", "coder"]):
-        return "code"
-    if "roleplay" in tags:
-        return "roleplay"
-    if "agent" in tags or "agentic" in tags:
-        return "agent"
-    if any(t in tags for t in ["reasoning", "math", "thinking"]):
-        return "reasoning"
-
-    # fall back to pipeline tag, but make it readable
-    type_map = {
-        "text-generation": "chat",
-        "image-text-to-text": "chat",
-        "text-to-image": "image-gen",
-        "image-to-video": "video",
-        "text-to-speech": "tts",
-    }
-    return type_map.get(pipeline, "")
-
-
-def discover_gguf_models(available_gb, forced_quant=None, limit=20):
-    # fetching trending models. api, please don't rate limit me.
-    # query trending gguf models - sorted by likes this week
-    url = (
-        "https://huggingface.co/api/models"
-        "?filter=gguf"
-        "&sort=likes7d"
-        f"&limit={limit * 3}"
-    )
-
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "gguf-fit/2.0"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            models = json.loads(resp.read().decode())
-    except Exception as e:
-        return [], str(e)
-
-    results = []
-    seen = set()
-
-    for model in models:
-        model_id = model.get("id", "")
-        if not model_id or model_id in seen:
-            continue
-        seen.add(model_id)
-
-        likes = model.get("likes", 0)
-        downloads = model.get("downloads", 0)
-        # get pipeline_tag and tags from search results
-        pipeline_tag = model.get("pipeline_tag", "")
-        model_tags = model.get("tags", [])
-
-        # get file listing to find ALL GGUF files for this model
-        try:
-            files_url = f"https://huggingface.co/api/models/{model_id}?blobs=true"
-            req2 = urllib.request.Request(files_url, headers={"User-Agent": "gguf-fit/2.0"})
-            with urllib.request.urlopen(req2, timeout=30) as resp2:
-                model_info = json.loads(resp2.read().decode())
-        except Exception:
-            continue
-
-        siblings = model_info.get("siblings", [])
-        gguf_files = []
-        for f in siblings:
-            fname = f.get("rfilename", "")
-            size_bytes = f.get("size", 0)
-            if not fname.lower().endswith(".gguf"):
-                continue
-            if "mmproj" in fname.lower():
-                continue
-
-            size_gb = size_bytes / (1024**3)
-            # skip zero-size files - they're likely API failures or untracked
-            if size_gb <= 0:
-                continue
-
-            # skip if size > 120GB (sanity check - no GGUF should be >120GB)
-            if size_gb > 120:
-                continue
-
-            # determine quant level from filename
-            quant = infer_quant_from_filename(fname)
-            if quant:
-                # if user forced a specific quant, filter to only that one
-                if forced_quant and forced_quant.upper() != quant.upper():
-                    continue
-                gguf_files.append({
-                    "file": fname,
-                    "size_gb": round(size_gb, 2),
-                    "quant": quant,
-                })
-
-        if not gguf_files:
-            continue
-
-        if forced_quant:
-            # user forced a quant - just pick the first matching one that fits
-            candidates = [f for f in gguf_files if f["size_gb"] <= available_gb]
-            if not candidates:
-                continue
-            best = candidates[0]
-        else:
-            # find the best quant that fits in available memory
-            candidates = []
-            for f in gguf_files:
-                if f["size_gb"] <= available_gb:
-                    # get quality rank (lower = better)
-                    quality_rank = QUANT_QUALITY_ORDER.index(f["quant"]) if f["quant"] in QUANT_QUALITY_ORDER else 99
-                    candidates.append({
-                        **f,
-                        "quality_rank": quality_rank,
-                    })
-
-            if not candidates:
-                continue
-
-            # pick highest quality (lowest rank number)
-            best = min(candidates, key=lambda x: x["quality_rank"])
-
-        # store full model data for get_useful_type
-        model_data = {
-            "tags": model_tags,
-            "pipeline_tag": pipeline_tag,
-        }
-        type_label = get_useful_type(model_data)
-
-        results.append({
-            "model": model_id,
-            "file": best["file"],
-            "size_gb": best["size_gb"],
-            "likes": likes,
-            "downloads": downloads,
-            "tags": model_tags,
-            "pipeline_tag": pipeline_tag,
-            "type": type_label,
-            "quant": best["quant"],
-        })
-
-        if len(results) >= limit:
-            break
-
-    # sort by weekly likes (trending) as primary signal
-    results.sort(key=lambda x: x["likes"], reverse=True)
-    # final filter to ensure no zeros slip through
-    results = [r for r in results if r["size_gb"] > 0]
-    return results, None
-
-
-def get_recommendations(memory_gb, overhead_gb=2.0, forced_quant=None, limit=10):
-    # returns models that won't crash. hopefully.
-    available = memory_gb - overhead_gb
-    if available <= 0:
-        return [], "not enough memory"
-
-    candidates, err = discover_gguf_models(available, forced_quant, limit * 2)
-    if err:
-        return [], err
-
-    # filter by actual file size - exclude tiny/zero files (likely LFS pointers)
-    fits = [m for m in candidates if m["size_gb"] >= 0.1 and m["size_gb"] <= available]
-
-    # deduplicate by model repo - keep the best quant per repo (already done in discover)
-    seen = {}
-    for m in fits:
-        if m["model"] not in seen:
-            seen[m["model"]] = m
-    fits = list(seen.values())
-
-    return fits[:limit], None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -504,7 +439,7 @@ def print_report(sources, quants, oh_fn):
     key_quants = ["Q4_K_M", "Q5_K_M", "Q6_K"]
 
     print()
-    print("  gguf-fit — What GGUF models fit your hardware?")
+    print("  clanker — What GGUF models fit your hardware?")
     print("  " + "━" * 50)
     print()
 
@@ -565,7 +500,7 @@ def print_report(sources, quants, oh_fn):
 
 
 def build_sources(ram, gpus, cpu_only=False):
-    # build the list of memory sources to evaluate. 
+    # build the list of memory sources to evaluate.
     # this logic is confusing even to me.
     sources = []
 
@@ -576,7 +511,12 @@ def build_sources(ram, gpus, cpu_only=False):
             main_gpu = discrete[0]
             # VRAM column - single main GPU
             sources.append(
-                dict(tag="VRAM", name=main_gpu["name"], mem=main_gpu["vram_gb"], kind=main_gpu["kind"])
+                dict(
+                    tag="VRAM",
+                    name=main_gpu["name"],
+                    mem=main_gpu["vram_gb"],
+                    kind=main_gpu["kind"],
+                )
             )
             # Hybrid column - VRAM + RAM
             if ram:
@@ -629,7 +569,9 @@ def json_report(sources, quants, oh_fn, ram, gpus):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def find_best_fit_for_mode(gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, mode):
+def find_best_fit_for_mode(
+    gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, mode
+):
     # find best quantization for a given mode.
     # mode: 'ram', 'vram', or 'hybrid'.
     # returns (file, quant, size_gb, max_params_billions) or (none, none, 0, 0)
@@ -669,7 +611,9 @@ def find_best_fit_for_mode(gguf_files, vram_gb, vram_overhead, ram_gb, ram_overh
         if combined_avail <= 0:
             return None, None, 0, 0
 
-        f, quant, size_gb = find_best_fit(gguf_files, vram_gb + ram_gb, vram_overhead + ram_overhead)
+        f, quant, size_gb = find_best_fit(
+            gguf_files, vram_gb + ram_gb, vram_overhead + ram_overhead
+        )
         if f and size_gb <= combined_avail:
             # check that at least 20% fits in VRAM
             vram_needed = size_gb * 0.2
@@ -720,7 +664,7 @@ def recommend_mode(vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files):
 
 def main():
     ap = argparse.ArgumentParser(
-        prog="gguf-fit",
+        prog="clanker",
         description="Detect hardware & find GGUF models that fit.",
     )
     ap.add_argument(
@@ -751,19 +695,9 @@ def main():
     )
     ap.add_argument("--json", action="store_true", help="output JSON")
     ap.add_argument(
-        "--recommend",
-        action="store_true",
-        help="show trending GGUF models that fit your hardware",
-    )
-    ap.add_argument(
         "--quant",
         default=None,
         help="force a specific quantization level (default: auto-select best fit)",
-    )
-    ap.add_argument(
-        "--ram",
-        action="store_true",
-        help="also show recommendations for system RAM (for CPU inference)",
     )
     ap.add_argument(
         "--ram-only",
@@ -783,9 +717,7 @@ def main():
         action="store_true",
         help="Only show Hybrid (VRAM+RAM combined) inference options",
     )
-    ap.add_argument(
-        "--version", action="version", version=f"%(prog)s {__version__}"
-    )
+    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args()
 
     quants = list(QUANTS.keys()) if args.all_quants else DEFAULT_QUANTS
@@ -812,6 +744,7 @@ def main():
     elif context_len is not None:
         # each 1K tokens adds ~0.25GB for GPU, ~0.5GB for CPU
         ctx_overhead = (context_len / 1024) * 0.25
+
         def oh_fn(kind, mem):
             base = default_overhead(kind, mem)
             if kind == "apple":
@@ -876,13 +809,15 @@ def main():
                 gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "ram"
             )
             if ram_file:
-                options.append({
-                    "mode": "RAM",
-                    "file": ram_file,
-                    "quant": ram_quant,
-                    "size": ram_size,
-                    "max_b": ram_max,
-                })
+                options.append(
+                    {
+                        "mode": "RAM",
+                        "file": ram_file,
+                        "quant": ram_quant,
+                        "size": ram_size,
+                        "max_b": ram_max,
+                    }
+                )
 
         # VRAM-only option
         if vram_gb > 0:
@@ -890,13 +825,15 @@ def main():
                 gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "vram"
             )
             if vram_file:
-                options.append({
-                    "mode": "VRAM",
-                    "file": vram_file,
-                    "quant": vram_quant,
-                    "size": vram_size,
-                    "max_b": vram_max,
-                })
+                options.append(
+                    {
+                        "mode": "VRAM",
+                        "file": vram_file,
+                        "quant": vram_quant,
+                        "size": vram_size,
+                        "max_b": vram_max,
+                    }
+                )
 
         # Hybrid option
         if vram_gb > 0 and ram_gb > 0:
@@ -904,13 +841,15 @@ def main():
                 gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "hybrid"
             )
             if hybrid_file:
-                options.append({
-                    "mode": "Hybrid",
-                    "file": hybrid_file,
-                    "quant": hybrid_quant,
-                    "size": hybrid_size,
-                    "max_b": hybrid_max,
-                })
+                options.append(
+                    {
+                        "mode": "Hybrid",
+                        "file": hybrid_file,
+                        "quant": hybrid_quant,
+                        "size": hybrid_size,
+                        "max_b": hybrid_max,
+                    }
+                )
 
         # determine recommended mode (prioritize VRAM > Hybrid > RAM)
         rec_mode = None
@@ -922,29 +861,45 @@ def main():
                 options = filtered
         else:
             # auto-recommend based on algorithm
-            rec_mode, _, _, _, _ = recommend_mode(vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files)
+            rec_mode, _, _, _, _ = recommend_mode(
+                vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files
+            )
 
         if not options:
-            print(f"Error: no suitable quantization found for this model on your hardware", file=sys.stderr)
+            print(
+                f"Error: no suitable quantization found for this model on your hardware",
+                file=sys.stderr,
+            )
             sys.exit(1)
 
         print()
         hf_link = f"https://huggingface.co/{repo_id}"
         # show each option
         for opt in options:
-            print(f"  {opt['mode']}   {opt['quant']} ({opt['size']:.2f} GB)")
+            dynamic_note = ", dynamic" if is_dynamic_quant(opt["quant"]) else ""
+            print(
+                f"  {opt['mode']}   {opt['quant']} ({opt['size']:.2f} GB{dynamic_note})"
+            )
 
         # show recommendation
         print()
         if rec_mode:
             rec_opt = next((o for o in options if o["mode"] == rec_mode), None)
             if rec_opt:
-                if rec_opt["mode"] == "VRAM":
-                    reason = f"{rec_opt['quant']} fits in your {vram_gb:.0f}GB GPU"
-                elif rec_opt["mode"] == "Hybrid":
-                    reason = f"{rec_opt['quant']} uses your {vram_gb:.0f}GB GPU + {ram_gb:.0f}GB RAM"
+                if is_dynamic_quant(rec_opt["quant"]):
+                    ud_note = f" — Unsloth Dynamic, ~{resolve_quant(rec_opt['quant'])} quality"
                 else:
-                    reason = f"{rec_opt['quant']} fits in your {ram_gb:.0f}GB RAM"
+                    ud_note = ""
+                if rec_opt["mode"] == "VRAM":
+                    reason = (
+                        f"{rec_opt['quant']}{ud_note} fits in your {vram_gb:.0f}GB GPU"
+                    )
+                elif rec_opt["mode"] == "Hybrid":
+                    reason = f"{rec_opt['quant']}{ud_note} uses your {vram_gb:.0f}GB GPU + {ram_gb:.0f}GB RAM"
+                else:
+                    reason = (
+                        f"{rec_opt['quant']}{ud_note} fits in your {ram_gb:.0f}GB RAM"
+                    )
                 print(f"  Recommended: {rec_opt['mode']} ({reason})")
                 print(f"  {hf_link}")
         print()
@@ -991,58 +946,6 @@ def main():
         print(f"  Starting: {' '.join(server_cmd)}")
         print()
         os.execvp("llama-server", server_cmd)
-        return
-
-    # ── Recommendations ──
-    if args.recommend:
-        primary = sources[0]
-        overhead = oh_fn(primary["kind"], primary["mem"])
-
-        # add runtime overhead for GPU (KV cache, compute buffers, etc.)
-        # this ensures the recommendation fits entirely in VRAM, not just the model weights
-        if primary["kind"] in ("nvidia", "amd"):
-            overhead += RUNTIME_OVERHEAD_GB
-
-        # if user specified --quant, use it; otherwise auto-select best quant
-        forced_quant = args.quant
-
-        recs, err = get_recommendations(primary["mem"], overhead, forced_quant)
-        if err:
-            print(f"Error: {err}", file=sys.stderr)
-            sys.exit(1)
-
-        # get RAM recommendations if requested
-        ram_recs = None
-        show_ram = args.ram
-        if args.ram:
-            ram_source = next((s for s in sources if s["tag"] == "RAM"), None)
-            if ram_source:
-                ram_overhead = oh_fn(ram_source["kind"], ram_source["mem"])
-                ram_recs, ram_err = get_recommendations(ram_source["mem"], ram_overhead, forced_quant)
-                if ram_err:
-                    ram_recs = None
-
-        # output in new format: model name + HF link + which quant fits where
-        print()
-        print("  gguf-fit — Trending models that fit your hardware")
-        print("  " + "━" * 50)
-        print()
-
-        for rec in recs:
-            print(f"  {rec['model']}")
-            print(f"    {rec['quant']} ({rec['size_gb']:.2f} GB)")
-            print(f"    https://huggingface.co/{rec['model']}")
-            print()
-
-        if show_ram and ram_recs:
-            print("  ─── RAM-Only Options " + "─" * 32)
-            print()
-            for rec in ram_recs:
-                print(f"  {rec['model']}")
-                print(f"    {rec['quant']} ({rec['size_gb']:.2f} GB)")
-                print(f"    https://huggingface.co/{rec['model']}")
-                print()
-
         return
 
     # ── Output ──

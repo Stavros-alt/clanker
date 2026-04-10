@@ -1,21 +1,21 @@
-# gguf-fit
+# clanker
 
 tells you what gguf models fit your hardware. that's it.
 
 ## install
 
 ```bash
-pip install gguf-fit
+pip install clanker
 # or
-uv pip install gguf-fit
+uv pip install clanker
 ```
 
 ## usage
 
 ```bash
-gguf-fit                                    # show hardware + what fits
-gguf-fit unsloth/Qwen3-8B-GGUF             # check a specific model
-gguf-fit unsloth/Qwen3-8B-GGUF --context 8192  # with custom context
+clanker                                    # show hardware + what fits
+clanker unsloth/Qwen3-8B-GGUF             # check a specific model
+clanker unsloth/Qwen3-8B-GGUF --context 8192  # with custom context
 ```
 
 ## output

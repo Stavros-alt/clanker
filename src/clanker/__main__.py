@@ -1,4 +1,4 @@
-from gguf_fit import main
+from clanker import main
 
 if __name__ == "__main__":
     main()
