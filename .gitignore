@@ -21,3 +21,6 @@ Thumbs.db
 
 # KDE/Nobara
 .directory
+
+# clanker
+.clanker/

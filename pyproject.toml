@@ -12,6 +12,10 @@ license = {text = "MIT"}
 authors = [
     {name = "clanker"},
 ]
+dependencies = [
+    "huggingface_hub",
+    "tqdm",
+]
 
 [project.scripts]
 clanker = "clanker.__main__:main"

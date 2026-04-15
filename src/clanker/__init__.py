@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import urllib.request
+import pathlib
 
 __version__ = "4.0.0"
 
@@ -23,15 +24,21 @@ QUANTS = {
     # K-quants
     "Q2_K": 2.96,
     "Q2_K_S": 2.96,
+    "Q2_K_P": 3.5,
     "Q3_K_S": 3.41,
     "Q3_K_M": 3.74,
     "Q3_K_L": 4.03,
+    "Q3_K_P": 4.1,
     "Q4_K_S": 4.59,
     "Q4_K_M": 4.85,
+    "Q4_K_P": 5.2,
     "Q5_K_S": 5.54,
     "Q5_K_M": 5.69,
+    "Q5_K_P": 6.1,
     "Q6_K": 6.57,
+    "Q6_K_P": 7.0,
     "Q8_0": 8.50,
+    "Q8_K_P": 9.4,
     # IQ series
     "IQ1_S": 1.56,
     "IQ1_M": 1.75,
@@ -62,18 +69,23 @@ QUANT_QUALITY_ORDER = [
     "F32",
     "BF16",
     "F16",
+    "Q8_K_P",
     "Q8_0",
+    "Q6_K_P",
     "Q6_K",
+    "Q5_K_P",
     "Q5_K_M",
     "Q5_K_S",
     "Q5_1",
     "Q5_0",
+    "Q4_K_P",
     "Q4_K_M",
     "Q4_K_S",
     "Q4_1",
     "Q4_0",
     "IQ4_NL",
     "IQ4_XS",
+    "Q3_K_P",
     "Q3_K_L",
     "Q3_K_M",
     "Q3_K_S",
@@ -81,6 +93,7 @@ QUANT_QUALITY_ORDER = [
     "IQ3_S",
     "IQ3_XS",
     "IQ3_XXS",
+    "Q2_K_P",
     "Q2_K",
     "Q2_K_S",
     "IQ2_M",
@@ -658,303 +671,556 @@ def recommend_mode(vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Local storage
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+def get_model_dir():
+    """Get the directory where models are stored."""
+    return pathlib.Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def get_metadata_file():
+    """Get the path to the metadata file."""
+    return pathlib.Path.home() / ".clanker" / "metadata.json"
+
+
+def load_metadata():
+    """Load metadata from JSON file."""
+    mf = get_metadata_file()
+    if mf.exists():
+        with open(mf) as f:
+            return json.load(f)
+    return {}
+
+
+def save_metadata(metadata):
+    """Save metadata to JSON file."""
+    mf = get_metadata_file()
+    mf.parent.mkdir(parents=True, exist_ok=True)
+    with open(mf, "w") as f:
+        json.dump(metadata, f, indent=2)
+
+
+def list_local_models():
+    model_dir = get_model_dir()
+    if not model_dir.exists():
+        return []
+    models = []
+    for file in model_dir.rglob("*.gguf"):
+        # this is dumb but it works
+        models.append(str(file.relative_to(model_dir)))
+    return models
+
+
+def handle_ls(args):
+    model_dir = get_model_dir()
+    if not model_dir.exists():
+        print("No local models found.")
+        return
+    found = False
+    for file in model_dir.rglob("*.gguf"):
+        if "mmproj" in file.name.lower():
+            continue  # hate these mmproj things
+        found = True
+        relative = file.relative_to(model_dir)
+        parts = str(relative).split("/")
+        if len(parts) >= 3 and parts[0].startswith("models--"):
+            repo_parts = parts[0].split("--")[1:]
+            repo = "/".join(repo_parts)
+            filename = parts[-1]
+            quant = infer_quant_from_filename(filename)
+            # trying to make it less ugly
+            repo_name = repo.split("/")[-1]
+            if filename.startswith(repo_name):
+                short_filename = filename[len(repo_name) :].lstrip("-")
+            else:
+                short_filename = filename
+            if quant:
+                print(f"{repo}/{short_filename} ({quant})")
+            else:
+                print(f"{repo}/{short_filename}")
+        else:
+            # whatever
+            print(str(relative))
+    if not found:
+        print("No local models found.")
+
+
+def handle_rm(args):
+    model = args.model
+    model_dir = get_model_dir()
+    path = model_dir / model
+    if path.exists():
+        path.unlink()
+        print(f"Removed {model}")
+        # whatever, update this junk
+        metadata = load_metadata()
+        if model in metadata:
+            del metadata[model]
+            save_metadata(metadata)
+    else:
+        print(f"Model {model} not found", file=sys.stderr)
+
+
+def handle_info(args):
+    model = args.model
+    metadata = load_metadata()
+    if model in metadata:
+        info = metadata[model]
+        print(f"Model: {model}")
+        print(f"Size: {info.get('size_gb', 'unknown')} GB")
+        print(f"Quant: {info.get('quant', 'unknown')}")
+    else:
+        print(f"No metadata for {model}")
+
+
+def handle_cp(args):
+    src = args.src
+    dest = args.dest
+    model_dir = get_model_dir()
+    src_path = model_dir / src
+    dest_path = model_dir / dest
+    if src_path.exists():
+        shutil.copy2(src_path, dest_path)
+        print(f"Copied {src} to {dest}")
+    else:
+        print(f"Source {src} not found", file=sys.stderr)
+
+
+def handle_mv(args):
+    src = args.src
+    dest = args.dest
+    model_dir = get_model_dir()
+    src_path = model_dir / src
+    dest_path = model_dir / dest
+    if src_path.exists():
+        src_path.rename(dest_path)
+        print(f"Moved {src} to {dest}")
+        # update metadata
+        metadata = load_metadata()
+        if src in metadata:
+            metadata[dest] = metadata[src]
+            del metadata[src]
+            save_metadata(metadata)
+    else:
+        print(f"Source {src} not found", file=sys.stderr)
+
+
+def handle_du(args):
+    model_dir = get_model_dir()
+    total_size = 0
+    for file in model_dir.rglob("*.gguf"):
+        total_size += file.stat().st_size
+    print(f"Total disk usage: {total_size / (1024**3):.2f} GB")
+
+
+def handle_download(args):
+    import huggingface_hub
+
+    repo_id = args.model
+    quant = args.quant
+    gguf_files, err = fetch_gguf_files(repo_id)
+    if err:
+        print(f"Error: {err}", file=sys.stderr)
+        return
+    if not gguf_files:
+        print("No GGUF files found", file=sys.stderr)
+        return
+    if quant:
+        file = next((f for f in gguf_files if quant in f["name"]), None)
+        if not file:
+            print(f"No file with quant {quant} found", file=sys.stderr)
+            return
+    else:
+        file = gguf_files[0]  # download first
+    filename = file["name"]
+    try:
+        local_path = huggingface_hub.hf_hub_download(repo_id, filename)
+        print(f"Downloaded to {local_path}")
+        # update metadata
+        metadata = load_metadata()
+        key = repo_id + "/" + filename  # or just filename
+        metadata[filename] = {
+            "size_gb": file["size_gb"],
+            "quant": infer_quant_from_filename(filename),
+        }
+        save_metadata(metadata)
+    except Exception as e:
+        print(f"Error downloading: {e}", file=sys.stderr)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CLI entry point
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        prog="clanker",
-        description="Detect hardware & find GGUF models that fit.",
-    )
-    ap.add_argument(
-        "model",
-        nargs="?",
-        help="Hugging Face model ID (e.g. HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive)",
-    )
-    ap.add_argument(
-        "--cpu", action="store_true", help="only consider system RAM (ignore GPUs)"
-    )
-    ap.add_argument(
-        "--all-quants", action="store_true", help="show all quantization types"
-    )
-    ap.add_argument(
-        "--overhead",
-        type=float,
-        default=None,
-        metavar="GB",
-        help="override auto-detected memory overhead (GB)",
-    )
-    ap.add_argument(
-        "--context",
-        "--ctx",
-        type=int,
-        default=None,
-        metavar="N",
-        help="set context length (adds overhead: ~0.25GB per 1K tokens)",
-    )
-    ap.add_argument("--json", action="store_true", help="output JSON")
-    ap.add_argument(
-        "--quant",
-        default=None,
-        help="force a specific quantization level (default: auto-select best fit)",
-    )
-    ap.add_argument(
-        "--ram-only",
-        dest="ram_only",
-        action="store_true",
-        help="Only show RAM-only inference options",
-    )
-    ap.add_argument(
-        "--vram-only",
-        dest="vram_only",
-        action="store_true",
-        help="Only show VRAM-only (GPU) inference options",
-    )
-    ap.add_argument(
-        "--hybrid",
-        dest="hybrid_only",
-        action="store_true",
-        help="Only show Hybrid (VRAM+RAM combined) inference options",
-    )
-    ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    args = ap.parse_args()
+    # Check for subcommands
+    known_subs = ["ls", "download", "rm", "info", "cp", "mv", "du"]
+    use_subcommand = len(sys.argv) > 1 and sys.argv[1] in known_subs
 
-    quants = list(QUANTS.keys()) if args.all_quants else DEFAULT_QUANTS
+    if use_subcommand:
+        # Use subcommand parser
+        ap = argparse.ArgumentParser(
+            prog="clanker",
+            description="Detect hardware & find GGUF models that fit.",
+        )
+        subparsers = ap.add_subparsers(dest="subcommand", help="Available commands")
 
-    # ── Detect ──
-    ram = detect_ram()
-    gpus = [] if args.cpu else detect_gpus()
+        # File system commands
+        ls_parser = subparsers.add_parser("ls", help="List local models or HF models")
+        ls_parser.add_argument(
+            "path", nargs="?", default=".", help="Path to list (default: local models)"
+        )
 
-    if ram is None and not gpus:
-        print("Error: could not detect system memory.", file=sys.stderr)
-        sys.exit(1)
+        download_parser = subparsers.add_parser("download", help="Download a model")
+        download_parser.add_argument("model", help="Hugging Face model ID")
+        download_parser.add_argument("quant", nargs="?", help="Quantization level")
 
-    sources = build_sources(ram, gpus, cpu_only=args.cpu)
+        rm_parser = subparsers.add_parser("rm", help="Remove local model")
+        rm_parser.add_argument("model", help="Model name or path")
 
-    if not sources:
-        print("Error: no memory sources found.", file=sys.stderr)
-        sys.exit(1)
+        info_parser = subparsers.add_parser("info", help="Show model details")
+        info_parser.add_argument("model", help="Model name or path")
 
-    # ── Overhead function ──
-    context_len = args.context
-    if args.overhead is not None:
-        fixed = args.overhead
-        oh_fn = lambda kind, mem: fixed
-    elif context_len is not None:
-        # each 1K tokens adds ~0.25GB for GPU, ~0.5GB for CPU
-        ctx_overhead = (context_len / 1024) * 0.25
+        cp_parser = subparsers.add_parser("cp", help="Copy model")
+        cp_parser.add_argument("src", help="Source model")
+        cp_parser.add_argument("dest", help="Destination path")
 
-        def oh_fn(kind, mem):
-            base = default_overhead(kind, mem)
-            if kind == "apple":
-                return base + (context_len / 1024) * 0.3  # metal is a bit more
-            elif kind in ("nvidia", "amd"):
-                return base + (context_len / 1024) * 0.25
-            elif kind == "hybrid":
-                return base + (context_len / 1024) * 0.35  # both VRAM and RAM
-            else:
-                return base + (context_len / 1024) * 0.5  # CPU/RAM
+        mv_parser = subparsers.add_parser("mv", help="Move/rename model")
+        mv_parser.add_argument("src", help="Source model")
+        mv_parser.add_argument("dest", help="Destination path")
+
+        du_parser = subparsers.add_parser("du", help="Show disk usage")
+        du_parser.add_argument("path", nargs="?", default=".", help="Path to check")
+
+        ap.add_argument(
+            "--version", action="version", version=f"%(prog)s {__version__}"
+        )
+        args = ap.parse_args()
     else:
-        oh_fn = default_overhead
+        # Backward compatibility: old parser
+        ap = argparse.ArgumentParser(
+            prog="clanker",
+            description="Detect hardware & find GGUF models that fit.",
+        )
+        ap.add_argument(
+            "model",
+            nargs="?",
+            help="Hugging Face model ID (e.g. HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive)",
+        )
+        ap.add_argument(
+            "--cpu", action="store_true", help="only consider system RAM (ignore GPUs)"
+        )
+        ap.add_argument(
+            "--all-quants", action="store_true", help="show all quantization types"
+        )
+        ap.add_argument(
+            "--overhead",
+            type=float,
+            default=None,
+            metavar="GB",
+            help="override auto-detected memory overhead (GB)",
+        )
+        ap.add_argument(
+            "--context",
+            "--ctx",
+            type=int,
+            default=None,
+            metavar="N",
+            help="set context length (adds overhead: ~0.25GB per 1K tokens)",
+        )
+        ap.add_argument("--json", action="store_true", help="output JSON")
+        ap.add_argument(
+            "--quant",
+            default=None,
+            help="force a specific quantization level (default: auto-select best fit)",
+        )
+        ap.add_argument(
+            "--ram-only",
+            dest="ram_only",
+            action="store_true",
+            help="Only show RAM-only inference options",
+        )
+        ap.add_argument(
+            "--vram-only",
+            dest="vram_only",
+            action="store_true",
+            help="Only show VRAM-only (GPU) inference options",
+        )
+        ap.add_argument(
+            "--hybrid",
+            dest="hybrid_only",
+            action="store_true",
+            help="Only show Hybrid (VRAM+RAM combined) inference options",
+        )
+        ap.add_argument(
+            "--version", action="version", version=f"%(prog)s {__version__}"
+        )
+        args = ap.parse_args()
+        args.subcommand = "check"
 
-    # ── Model-specific output ──
-    if args.model:
-        repo_id, requested_quant = parse_model_id(args.model)
+    if args.subcommand == "check":
+        quants = list(QUANTS.keys()) if args.all_quants else DEFAULT_QUANTS
 
-        # fetch GGUF files
-        gguf_files, err = fetch_gguf_files(repo_id)
-        if err:
-            print(f"Error: {err}", file=sys.stderr)
+        # ── Detect ──
+        ram = detect_ram()
+        gpus = [] if args.cpu else detect_gpus()
+
+        if ram is None and not gpus:
+            print("Error: could not detect system memory.", file=sys.stderr)
             sys.exit(1)
 
-        # determine which mode filter was requested
-        mode_filter = None
-        if args.ram_only:
-            mode_filter = "ram"
-        elif args.vram_only:
-            mode_filter = "vram"
-        elif args.hybrid_only:
-            mode_filter = "hybrid"
+        sources = build_sources(ram, gpus, cpu_only=args.cpu)
 
-        # get hardware info
-        ram_gb = ram if ram else 0
-        vram_gb = 0
-        vram_overhead = 2.0
-        ram_overhead = 3.0
+        if not sources:
+            print("Error: no memory sources found.", file=sys.stderr)
+            sys.exit(1)
 
-        # find primary GPU (first one or highest VRAM)
-        gpu_source = None
-        for s in sources:
-            if s["tag"] == "VRAM":
-                gpu_source = s
-                break
-            if s["tag"].startswith("GPU") or s["tag"] == "Metal":
-                if not gpu_source or s["mem"] > gpu_source["mem"]:
-                    gpu_source = s
+        # ── Overhead function ──
+        context_len = args.context
+        if args.overhead is not None:
+            fixed = args.overhead
+            oh_fn = lambda kind, mem: fixed
+        elif context_len is not None:
+            # each 1K tokens adds ~0.25GB for GPU, ~0.5GB for CPU
+            ctx_overhead = (context_len / 1024) * 0.25
 
-        if gpu_source:
-            vram_gb = gpu_source["mem"]
-            vram_overhead = oh_fn(gpu_source["kind"], gpu_source["mem"])
-            # add runtime overhead for GPU (KV cache, compute buffers, etc.)
-            if gpu_source["kind"] in ("nvidia", "amd"):
-                vram_overhead += RUNTIME_OVERHEAD_GB
-
-        # get all three options
-        options = []
-
-        # RAM-only option
-        if ram_gb > 0:
-            ram_file, ram_quant, ram_size, ram_max = find_best_fit_for_mode(
-                gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "ram"
-            )
-            if ram_file:
-                options.append(
-                    {
-                        "mode": "RAM",
-                        "file": ram_file,
-                        "quant": ram_quant,
-                        "size": ram_size,
-                        "max_b": ram_max,
-                    }
-                )
-
-        # VRAM-only option
-        if vram_gb > 0:
-            vram_file, vram_quant, vram_size, vram_max = find_best_fit_for_mode(
-                gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "vram"
-            )
-            if vram_file:
-                options.append(
-                    {
-                        "mode": "VRAM",
-                        "file": vram_file,
-                        "quant": vram_quant,
-                        "size": vram_size,
-                        "max_b": vram_max,
-                    }
-                )
-
-        # Hybrid option
-        if vram_gb > 0 and ram_gb > 0:
-            hybrid_file, hybrid_quant, hybrid_size, hybrid_max = find_best_fit_for_mode(
-                gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "hybrid"
-            )
-            if hybrid_file:
-                options.append(
-                    {
-                        "mode": "Hybrid",
-                        "file": hybrid_file,
-                        "quant": hybrid_quant,
-                        "size": hybrid_size,
-                        "max_b": hybrid_max,
-                    }
-                )
-
-        # determine recommended mode (prioritize VRAM > Hybrid > RAM)
-        rec_mode = None
-        if mode_filter:
-            # user selected specific mode, only show that
-            filtered = [o for o in options if o["mode"].lower() == mode_filter.lower()]
-            if filtered:
-                rec_mode = filtered[0]["mode"]
-                options = filtered
+            def oh_fn(kind, mem):
+                base = default_overhead(kind, mem)
+                if kind == "apple":
+                    return base + (context_len / 1024) * 0.3  # metal is a bit more
+                elif kind in ("nvidia", "amd"):
+                    return base + (context_len / 1024) * 0.25
+                elif kind == "hybrid":
+                    return base + (context_len / 1024) * 0.35  # both VRAM and RAM
+                else:
+                    return base + (context_len / 1024) * 0.5  # CPU/RAM
         else:
-            # auto-recommend based on algorithm
-            rec_mode, _, _, _, _ = recommend_mode(
-                vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files
-            )
+            oh_fn = default_overhead
 
-        if not options:
-            print(
-                f"Error: no suitable quantization found for this model on your hardware",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+            # ── Model-specific output ──
+        if args.model:
+            repo_id, requested_quant = parse_model_id(args.model)
 
-        print()
-        hf_link = f"https://huggingface.co/{repo_id}"
-        # show each option
-        for opt in options:
-            dynamic_note = ", dynamic" if is_dynamic_quant(opt["quant"]) else ""
-            print(
-                f"  {opt['mode']}   {opt['quant']} ({opt['size']:.2f} GB{dynamic_note})"
-            )
+            # fetch GGUF files
+            gguf_files, err = fetch_gguf_files(repo_id)
+            if err:
+                print(f"Error: {err}", file=sys.stderr)
+                sys.exit(1)
 
-        # show recommendation
-        print()
-        if rec_mode:
-            rec_opt = next((o for o in options if o["mode"] == rec_mode), None)
-            if rec_opt:
-                if is_dynamic_quant(rec_opt["quant"]):
-                    ud_note = f" — Unsloth Dynamic, ~{resolve_quant(rec_opt['quant'])} quality"
-                else:
-                    ud_note = ""
-                if rec_opt["mode"] == "VRAM":
-                    reason = (
-                        f"{rec_opt['quant']}{ud_note} fits in your {vram_gb:.0f}GB GPU"
+            # determine which mode filter was requested
+            mode_filter = None
+            if args.ram_only:
+                mode_filter = "ram"
+            elif args.vram_only:
+                mode_filter = "vram"
+            elif args.hybrid_only:
+                mode_filter = "hybrid"
+
+            # get hardware info
+            ram_gb = ram if ram else 0
+            vram_gb = 0
+            vram_overhead = 2.0
+            ram_overhead = 3.0
+
+            # find primary GPU (first one or highest VRAM)
+            gpu_source = None
+            for s in sources:
+                if s["tag"] == "VRAM":
+                    gpu_source = s
+                    break
+                if s["tag"].startswith("GPU") or s["tag"] == "Metal":
+                    if not gpu_source or s["mem"] > gpu_source["mem"]:
+                        gpu_source = s
+
+            if gpu_source:
+                vram_gb = gpu_source["mem"]
+                vram_overhead = oh_fn(gpu_source["kind"], gpu_source["mem"])
+                # add runtime overhead for GPU (KV cache, compute buffers, etc.)
+                if gpu_source["kind"] in ("nvidia", "amd"):
+                    vram_overhead += RUNTIME_OVERHEAD_GB
+
+            # get all three options
+            options = []
+
+            # RAM-only option
+            if ram_gb > 0:
+                ram_file, ram_quant, ram_size, ram_max = find_best_fit_for_mode(
+                    gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "ram"
+                )
+                if ram_file:
+                    options.append(
+                        {
+                            "mode": "RAM",
+                            "file": ram_file,
+                            "quant": ram_quant,
+                            "size": ram_size,
+                            "max_b": ram_max,
+                        }
                     )
-                elif rec_opt["mode"] == "Hybrid":
-                    reason = f"{rec_opt['quant']}{ud_note} uses your {vram_gb:.0f}GB GPU + {ram_gb:.0f}GB RAM"
-                else:
-                    reason = (
-                        f"{rec_opt['quant']}{ud_note} fits in your {ram_gb:.0f}GB RAM"
+
+            # VRAM-only option
+            if vram_gb > 0:
+                vram_file, vram_quant, vram_size, vram_max = find_best_fit_for_mode(
+                    gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "vram"
+                )
+                if vram_file:
+                    options.append(
+                        {
+                            "mode": "VRAM",
+                            "file": vram_file,
+                            "quant": vram_quant,
+                            "size": vram_size,
+                            "max_b": vram_max,
+                        }
                     )
-                print(f"  Recommended: {rec_opt['mode']} ({reason})")
-                print(f"  {hf_link}")
-        print()
 
-        # figure out which quant to use for the server command
-        serve_quant = None
-        if rec_mode:
-            rec_opt = next((o for o in options if o["mode"] == rec_mode), None)
-            if rec_opt:
-                serve_quant = rec_opt["quant"]
-        if not serve_quant:
-            serve_quant = options[0]["quant"]
+            # Hybrid option
+            if vram_gb > 0 and ram_gb > 0:
+                hybrid_file, hybrid_quant, hybrid_size, hybrid_max = (
+                    find_best_fit_for_mode(
+                        gguf_files,
+                        vram_gb,
+                        vram_overhead,
+                        ram_gb,
+                        ram_overhead,
+                        "hybrid",
+                    )
+                )
+                if hybrid_file:
+                    options.append(
+                        {
+                            "mode": "Hybrid",
+                            "file": hybrid_file,
+                            "quant": hybrid_quant,
+                            "size": hybrid_size,
+                            "max_b": hybrid_max,
+                        }
+                    )
 
-        # build the llama-server command
-        hf_tag = f"{repo_id}:{serve_quant}"
-        server_cmd = ["llama-server", "-hf", hf_tag]
+            # determine recommended mode (prioritize VRAM > Hybrid > RAM)
+            rec_mode = None
+            if mode_filter:
+                # user selected specific mode, only show that
+                filtered = [
+                    o for o in options if o["mode"].lower() == mode_filter.lower()
+                ]
+                if filtered:
+                    rec_mode = filtered[0]["mode"]
+                    options = filtered
+            else:
+                # auto-recommend based on algorithm
+                rec_mode, _, _, _, _ = recommend_mode(
+                    vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files
+                )
 
-        print("  ─── Server Command " + "─" * 33)
-        print()
-        print(f"  llama-server -hf {hf_tag}")
-        print()
+            if not options:
+                print(
+                    f"Error: no suitable quantization found for this model on your hardware",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
-        # only prompt if stdout is a terminal and not in json mode
-        if not sys.stdout.isatty():
-            return
-
-        # check if llama-server is even installed before bothering the user
-        if not shutil.which("llama-server"):
-            print("  (llama-server not found in PATH — install llama.cpp to run)")
             print()
-            return
+            hf_link = f"https://huggingface.co/{repo_id}"
+            # show each option
+            for opt in options:
+                dynamic_note = ", dynamic" if is_dynamic_quant(opt["quant"]) else ""
+                print(
+                    f"  {opt['mode']}   {opt['quant']} ({opt['size']:.2f} GB{dynamic_note})"
+                )
 
-        try:
-            answer = input("  Start local server with web UI? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+            # show recommendation
             print()
-            return
+            if rec_mode:
+                rec_opt = next((o for o in options if o["mode"] == rec_mode), None)
+                if rec_opt:
+                    if is_dynamic_quant(rec_opt["quant"]):
+                        ud_note = f" — Unsloth Dynamic, ~{resolve_quant(rec_opt['quant'])} quality"
+                    else:
+                        ud_note = ""
+                    if rec_opt["mode"] == "VRAM":
+                        reason = f"{rec_opt['quant']}{ud_note} fits in your {vram_gb:.0f}GB GPU"
+                    elif rec_opt["mode"] == "Hybrid":
+                        reason = f"{rec_opt['quant']}{ud_note} uses your {vram_gb:.0f}GB GPU + {ram_gb:.0f}GB RAM"
+                    else:
+                        reason = f"{rec_opt['quant']}{ud_note} fits in your {ram_gb:.0f}GB RAM"
+                    print(f"  Recommended: {rec_opt['mode']} ({reason})")
+                    print(f"  {hf_link}")
+            print()
 
-        if answer not in ("y", "yes"):
-            return
+            # figure out which quant to use for the server command
+            serve_quant = None
+            if rec_mode:
+                rec_opt = next((o for o in options if o["mode"] == rec_mode), None)
+                if rec_opt:
+                    serve_quant = rec_opt["quant"]
+            if not serve_quant:
+                serve_quant = options[0]["quant"]
 
-        # hand off to llama-server. goodbye, python. you will not be missed.
-        print()
-        print(f"  Starting: {' '.join(server_cmd)}")
-        print()
-        os.execvp("llama-server", server_cmd)
+            # build the llama-server command
+            hf_tag = f"{repo_id}:{serve_quant}"
+            server_cmd = ["llama-server", "-hf", hf_tag]
+
+            print("  ─── Server Command " + "─" * 33)
+            print()
+            print(f"  llama-server -hf {hf_tag}")
+            print()
+
+            # only prompt if stdout is a terminal and not in json mode
+            if not sys.stdout.isatty():
+                return
+
+            # check if llama-server is even installed before bothering the user
+            if not shutil.which("llama-server"):
+                print("  (llama-server not found in PATH — install llama.cpp to run)")
+                print()
+                return
+
+            try:
+                answer = (
+                    input("  Start local server with web UI? [y/N] ").strip().lower()
+                )
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+
+            if answer not in ("y", "yes"):
+                return
+
+            # hand off to llama-server. goodbye, python. you will not be missed.
+            print()
+            print(f"  Starting: {' '.join(server_cmd)}")
+            print()
+            os.execvp("llama-server", server_cmd)
         return
 
-    # ── Output ──
-    if args.json:
-        data = json_report(sources, quants, oh_fn, ram, gpus)
-        json.dump(data, sys.stdout, indent=2)
-        print()
-    else:
-        print_report(sources, quants, oh_fn)
+        # ── Output ──
+        if args.json:
+            data = json_report(sources, quants, oh_fn, ram, gpus)
+            json.dump(data, sys.stdout, indent=2)
+            print()
+        else:
+            print_report(sources, quants, oh_fn)
+
+    if args.subcommand != "check":
+        if args.subcommand == "ls":
+            handle_ls(args)
+        elif args.subcommand == "download":
+            handle_download(args)
+        elif args.subcommand == "rm":
+            handle_rm(args)
+        elif args.subcommand == "info":
+            handle_info(args)
+        elif args.subcommand == "cp":
+            handle_cp(args)
+        elif args.subcommand == "mv":
+            handle_mv(args)
+        elif args.subcommand == "du":
+            handle_du(args)
+        return
 
 
 if __name__ == "__main__":
