@@ -856,6 +856,78 @@ def handle_download(args):
 
 
 def main():
+    # Check for help
+    if len(sys.argv) > 1 and sys.argv[1] in ("help", "--help", "-h"):
+        ap = argparse.ArgumentParser(
+            prog="clanker",
+            description="Detect hardware & find GGUF models that fit.",
+        )
+        # Add subparsers for help display
+        subparsers = ap.add_subparsers(dest="subcommand", help="Available commands")
+        ls_parser = subparsers.add_parser("ls", help="List local models or HF models")
+        download_parser = subparsers.add_parser("download", help="Download a model")
+        rm_parser = subparsers.add_parser("rm", help="Remove local model")
+        info_parser = subparsers.add_parser("info", help="Show model details")
+        cp_parser = subparsers.add_parser("cp", help="Copy model")
+        mv_parser = subparsers.add_parser("mv", help="Move/rename model")
+        du_parser = subparsers.add_parser("du", help="Show disk usage")
+        ap.add_argument(
+            "--version", action="version", version=f"%(prog)s {__version__}"
+        )
+        # Add the old parser arguments for completeness
+        ap.add_argument(
+            "model",
+            nargs="?",
+            help="Hugging Face model ID (e.g. HauhauCS/Qwen3.5-9B-Uncensored-HauhauCS-Aggressive)",
+        )
+        ap.add_argument(
+            "--cpu", action="store_true", help="only consider system RAM (ignore GPUs)"
+        )
+        ap.add_argument(
+            "--all-quants", action="store_true", help="show all quantization types"
+        )
+        ap.add_argument(
+            "--overhead",
+            type=float,
+            default=None,
+            metavar="GB",
+            help="override auto-detected memory overhead (GB)",
+        )
+        ap.add_argument(
+            "--context",
+            "--ctx",
+            type=int,
+            default=None,
+            metavar="N",
+            help="set context length (adds overhead: ~0.25GB per 1K tokens)",
+        )
+        ap.add_argument("--json", action="store_true", help="output JSON")
+        ap.add_argument(
+            "--quant",
+            default=None,
+            help="force a specific quantization level (default: auto-select best fit)",
+        )
+        ap.add_argument(
+            "--ram-only",
+            dest="ram_only",
+            action="store_true",
+            help="Only show RAM-only inference options",
+        )
+        ap.add_argument(
+            "--vram-only",
+            dest="vram_only",
+            action="store_true",
+            help="Only show VRAM-only (GPU) inference options",
+        )
+        ap.add_argument(
+            "--hybrid",
+            dest="hybrid_only",
+            action="store_true",
+            help="Only show Hybrid (VRAM+RAM combined) inference options",
+        )
+        ap.print_help()
+        return
+
     # Check for subcommands
     known_subs = ["ls", "download", "rm", "info", "cp", "mv", "du"]
     use_subcommand = len(sys.argv) > 1 and sys.argv[1] in known_subs
@@ -999,6 +1071,15 @@ def main():
                     return base + (context_len / 1024) * 0.5  # CPU/RAM
         else:
             oh_fn = default_overhead
+
+            # ── Output ──
+            if not args.model:
+                if args.json:
+                    data = json_report(sources, quants, oh_fn, ram, gpus)
+                    json.dump(data, sys.stdout, indent=2)
+                    print()
+                else:
+                    print_report(sources, quants, oh_fn)
 
             # ── Model-specific output ──
         if args.model:
@@ -1196,14 +1277,6 @@ def main():
             print()
             os.execvp("llama-server", server_cmd)
         return
-
-        # ── Output ──
-        if args.json:
-            data = json_report(sources, quants, oh_fn, ram, gpus)
-            json.dump(data, sys.stdout, indent=2)
-            print()
-        else:
-            print_report(sources, quants, oh_fn)
 
     if args.subcommand != "check":
         if args.subcommand == "ls":
