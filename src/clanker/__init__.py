@@ -332,6 +332,91 @@ def parse_model_id(model_arg):
     return model_arg, None
 
 
+def fetch_model_max_context(repo_id):
+    # try to get the model's context length from huggingface. why not.
+    # first: api call
+    try:
+        api_url = f"https://huggingface.co/api/models/{repo_id}"
+        req = urllib.request.Request(
+            api_url,
+            headers={"User-Agent": f"clanker/{__version__}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        cfg = data.get("config", {})
+        for key in [
+            "max_position_embeddings",
+            "n_ctx",
+            "context_length",
+            "max_seq_len",
+            "model_max_length",
+        ]:
+            if key in cfg:
+                try:
+                    return int(cfg[key])
+                except (ValueError, TypeError):
+                    continue
+    except Exception:
+        pass
+    # api failed. try raw config.json i guess.
+    try:
+        cfg_url = f"https://huggingface.co/{repo_id}/raw/main/config.json"
+        req = urllib.request.Request(
+            cfg_url, headers={"User-Agent": f"clanker/{__version__}"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            cfg = json.loads(resp.read().decode())
+        for key in [
+            "max_position_embeddings",
+            "n_ctx",
+            "context_length",
+            "max_seq_len",
+            "model_max_length",
+        ]:
+            if key in cfg:
+                try:
+                    return int(cfg[key])
+                except (ValueError, TypeError):
+                    continue
+    except Exception:
+        pass  # whatever, give up
+    return None
+
+
+def compute_max_context(mode, model_size_gb, vram_gb, ram_gb, gpu_kind=None):
+    # how many tokens can we even fit. rough math.
+    if mode == "VRAM":
+        if gpu_kind is None:
+            return None
+        available = vram_gb
+        base = default_overhead(gpu_kind, vram_gb)
+        if gpu_kind in ("nvidia", "amd"):
+            base += RUNTIME_OVERHEAD_GB
+        factor = 0.25 if gpu_kind in ("nvidia", "amd") else 0.30  # gpu
+    elif mode == "RAM":
+        available = ram_gb
+        base = 3.0  # cpu overhead
+        factor = 0.5
+    elif mode == "Hybrid":
+        if gpu_kind is None:
+            return None
+        available = vram_gb + ram_gb
+        vram_base = default_overhead(gpu_kind, vram_gb)
+        if gpu_kind in ("nvidia", "amd"):
+            vram_base += RUNTIME_OVERHEAD_GB
+        ram_base = 3.0
+        base = vram_base + ram_base
+        factor = 0.35  # split memory
+    else:
+        return None
+
+    remaining = available - base - model_size_gb
+    if remaining <= 0:
+        return 0  # no room for context at all
+    max_tokens = int((remaining / factor) * 1024)
+    return max_tokens
+
+
 def fetch_gguf_files(repo_id):
     # fetch gguf file info from huggingface. api, please work.
     api_url = f"https://huggingface.co/api/models/{repo_id}/tree/main"
@@ -1250,8 +1335,46 @@ def main():
             print(f"  llama-server -hf {hf_tag}")
             print()
 
-            # only prompt if stdout is a terminal and not in json mode
+            # only prompt if stdout is a terminal
             if not sys.stdout.isatty():
+                # still check context and warn, but don't prompt
+                requested_ctx = args.context
+                native_ctx_val = None
+                effective_ctx = None
+                if requested_ctx is None:
+                    native_ctx_val = fetch_model_max_context(repo_id)
+                    if native_ctx_val is not None:
+                        effective_ctx = native_ctx_val
+                else:
+                    effective_ctx = requested_ctx
+
+                if effective_ctx is not None:
+                    selected_opt = None
+                    if rec_mode:
+                        selected_opt = next(
+                            (o for o in options if o["mode"] == rec_mode), None
+                        )
+                    else:
+                        selected_opt = options[0] if options else None
+
+                    if selected_opt:
+                        selected_mode = selected_opt["mode"]
+                        model_size_gb = selected_opt["size"]
+                        gpu_kind = gpu_source["kind"] if gpu_source else None
+                        max_ctx = compute_max_context(
+                            selected_mode, model_size_gb, vram_gb, ram_gb, gpu_kind
+                        )
+                        if max_ctx is not None and effective_ctx > max_ctx:
+                            if max_ctx < 1:
+                                print(
+                                    "Error: Insufficient memory to run this model with any context length.",
+                                    file=sys.stderr,
+                                )
+                                sys.exit(1)
+                            print(
+                                f"Warning: Context {effective_ctx:,} exceeds hardware capacity ({max_ctx:,} tokens max).",
+                                file=sys.stderr,
+                            )
                 return
 
             # check if llama-server is even installed before bothering the user
@@ -1259,6 +1382,94 @@ def main():
                 print("  (llama-server not found in PATH — install llama.cpp to run)")
                 print()
                 return
+
+            # --- context reduction check ---
+            override_ctx = None
+            requested_ctx = args.context
+            native_ctx_val = None
+            effective_ctx = None
+            if requested_ctx is None:
+                native_ctx_val = fetch_model_max_context(repo_id)
+                if native_ctx_val is not None:
+                    effective_ctx = native_ctx_val
+            else:
+                effective_ctx = requested_ctx
+
+            if effective_ctx is not None:
+                selected_opt = None
+                if rec_mode:
+                    selected_opt = next(
+                        (o for o in options if o["mode"] == rec_mode), None
+                    )
+                else:
+                    selected_opt = options[0] if options else None
+
+                if selected_opt:
+                    selected_mode = selected_opt["mode"]
+                    model_size_gb = selected_opt["size"]
+                    gpu_kind = gpu_source["kind"] if gpu_source else None
+                    max_ctx = compute_max_context(
+                        selected_mode, model_size_gb, vram_gb, ram_gb, gpu_kind
+                    )
+                    if max_ctx is not None and effective_ctx > max_ctx:
+                        if max_ctx < 1:
+                            print(
+                                "  Error: Insufficient memory to run this model with any context length."
+                            )
+                            return
+                        print()
+                        print("  Context Warning")
+                        if native_ctx_val is not None and requested_ctx is None:
+                            print(
+                                f"  This model supports {native_ctx_val:,} tokens, but your hardware"
+                            )
+                            print(f"  only fits {max_ctx:,} with the current settings.")
+                        else:
+                            if requested_ctx is not None:
+                                print(
+                                    f"  Requested context {requested_ctx:,} exceeds hardware capacity."
+                                )
+                            else:
+                                print(
+                                    f"  The model's default context exceeds hardware capacity."
+                                )
+                            print(f"  Maximum supported: {max_ctx:,} tokens.")
+                        print()
+                        suggestions = []
+                        for cand in [4096, 8192, 16384, 32768, 65536, 131072, 262144]:
+                            if cand <= max_ctx:
+                                suggestions.append(cand)
+                        suggestions = (
+                            suggestions[-2:] if len(suggestions) > 2 else suggestions
+                        )
+                        if suggestions:
+                            print("  To increase context at the cost of speed, try:")
+                            for s in suggestions:
+                                if s >= 1024:
+                                    hr = f"~{s // 1024}K"
+                                else:
+                                    hr = str(s)
+                                print(f"    --ctx {s}   ({hr})")
+                            print()
+                        try:
+                            answer = (
+                                input(f"  Continue with {max_ctx:,} tokens? [Y/n] ")
+                                .strip()
+                                .lower()
+                            )
+                        except (EOFError, KeyboardInterrupt):
+                            print()
+                            return
+                        if answer not in ("y", "yes"):
+                            return
+                        override_ctx = max_ctx
+
+            if override_ctx is not None:
+                server_cmd.extend(["--ctx-size", str(override_ctx)])
+                print()
+                print(f"  Starting: {' '.join(server_cmd)}")
+                print()
+                os.execvp("llama-server", server_cmd)
 
             try:
                 answer = (
