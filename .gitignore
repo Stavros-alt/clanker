@@ -8,18 +8,12 @@ dist/
 *.egg-info/
 .eggs/
 
-# virtual env (optional, uv typically uses its own cache)
+# uv
 .venv/
-
-# IDE
-.idea/
-.vscode/
+uv.lock
 
 # OS
 .DS_Store
-Thumbs.db
-
-# KDE/Nobara
 .directory
 
 # clanker

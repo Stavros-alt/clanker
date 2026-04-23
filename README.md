@@ -1,46 +1,32 @@
 # clanker
 
-tells you what gguf models fit your hardware and manages local GGUF model files.
+detect hardware and find GGUF models that fit.
 
 ## install
 
 ```bash
 pip install clanker
-# or
-uv pip install clanker
 ```
 
 ## usage
 
 ```bash
-clanker                                    # show hardware + what fits
-clanker unsloth/Qwen3-8B-GGUF             # check a specific model
-clanker unsloth/Qwen3-8B-GGUF --context 8192  # with custom context
-
-# new file system commands
-clanker ls                                 # list local models
-clanker download unsloth/Qwen3-8B-GGUF    # download model
-clanker rm model.gguf                     # remove local model
-clanker info model.gguf                   # show model details
-clanker cp src.gguf dest.gguf             # copy model
-clanker mv src.gguf dest.gguf             # move/rename model
-clanker du                                # show disk usage
+clanker
+clanker <repo_id>
+clanker ls
+clanker download <repo_id>
+clanker rm <file>
+clanker info <file>
+clanker cp <src> <dest>
+clanker mv <src> <dest>
+clanker du
 ```
-
-## output
-
-hardware specs, quantization table, huggingface links.
 
 ## local storage
 
-models are stored in the Hugging Face cache directory (~/.cache/huggingface/hub/) for easy integration.
-
-## what it does not do
-
-does not run or train models. use llama.cpp for inference.
+uses huggingface cache directory.
 
 ## requirements
 
 - python 3.10+
-- works on linux, macos, windows
-- optional: nvidia-smi (nvidia gpu), rocm-smi (amd gpu)
+- llama-server (optional, for inference)

@@ -426,15 +426,15 @@ def fetch_gguf_files(repo_id):
             headers={"User-Agent": f"clanker/{__version__}"},
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
+            tree_nodes = json.loads(resp.read().decode())
     except Exception as e:
         return None, str(e)
 
     gguf_files = []
-    for item in data:
-        if item.get("type") != "file":
+    for node in tree_nodes:
+        if node.get("type") != "file":
             continue
-        path = item.get("path", "")
+        path = node.get("path", "")
         if not path.lower().endswith(".gguf"):
             continue
         # skip mmproj files
@@ -636,7 +636,7 @@ def build_sources(ram, gpus, cpu_only=False):
 
 
 def json_report(sources, quants, oh_fn, ram, gpus):
-    result = {
+    report_body = {
         "hardware": {
             "ram_gb": round(ram, 1) if ram else None,
             "gpus": gpus,
@@ -644,7 +644,7 @@ def json_report(sources, quants, oh_fn, ram, gpus):
         "sources": [],
     }
     for s in sources:
-        entry = {
+        source_info = {
             "label": s["tag"],
             "memory_gb": s["mem"],
             "overhead_gb": round(oh_fn(s["kind"], s["mem"]), 1),
@@ -654,12 +654,12 @@ def json_report(sources, quants, oh_fn, ram, gpus):
             oh = oh_fn(s["kind"], s["mem"])
             mp = max_billions(s["mem"], q, oh)
             if mp > 0.5:
-                entry["quants"][q] = {
+                source_info["quants"][q] = {
                     "max_billion_params": round(mp, 1),
                     "url": make_url(mp),
                 }
-        result["sources"].append(entry)
-    return result
+        report_body["sources"].append(source_info)
+    return report_body
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1157,16 +1157,16 @@ def main():
         else:
             oh_fn = default_overhead
 
-            # ── Output ──
-            if not args.model:
-                if args.json:
-                    data = json_report(sources, quants, oh_fn, ram, gpus)
-                    json.dump(data, sys.stdout, indent=2)
-                    print()
-                else:
-                    print_report(sources, quants, oh_fn)
+        # ── Output ──
+        if not args.model:
+            if args.json:
+                data = json_report(sources, quants, oh_fn, ram, gpus)
+                json.dump(data, sys.stdout, indent=2)
+                print()
+            else:
+                print_report(sources, quants, oh_fn)
 
-            # ── Model-specific output ──
+        # ── Model-specific output ──
         if args.model:
             repo_id, requested_quant = parse_model_id(args.model)
 
