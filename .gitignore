@@ -15,6 +15,3 @@ uv.lock
 # OS
 .DS_Store
 .directory
-
-# clanker
-.clanker/

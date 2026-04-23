@@ -761,17 +761,17 @@ def recommend_mode(vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files):
 
 
 def get_model_dir():
-    """Get the directory where models are stored."""
+    # where models go to die.
     return pathlib.Path.home() / ".cache" / "huggingface" / "hub"
 
 
 def get_metadata_file():
-    """Get the path to the metadata file."""
+    # more json tracking. great.
     return pathlib.Path.home() / ".clanker" / "metadata.json"
 
 
 def load_metadata():
-    """Load metadata from JSON file."""
+    # load metadata. whatever.
     mf = get_metadata_file()
     if mf.exists():
         with open(mf) as f:
@@ -780,11 +780,47 @@ def load_metadata():
 
 
 def save_metadata(metadata):
-    """Save metadata to JSON file."""
+    # save metadata.
     mf = get_metadata_file()
     mf.parent.mkdir(parents=True, exist_ok=True)
     with open(mf, "w") as f:
         json.dump(metadata, f, indent=2)
+
+
+def get_config_file():
+    # where the config lives.
+    return pathlib.Path.home() / ".clanker" / "config.json"
+
+
+def load_config():
+    # just load the damn thing.
+    cf = get_config_file()
+    if cf.exists():
+        with open(cf) as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(conf):
+    # i hate json.
+    cf = get_config_file()
+    cf.parent.mkdir(parents=True, exist_ok=True)
+    with open(cf, "w") as f:
+        json.dump(conf, f, indent=2)
+
+
+def handle_set(args):
+    # why do i have to handle this manually.
+    s = load_config()
+    if args.key == "ctx":
+        try:
+            s["ctx"] = int(args.value)
+            save_config(s)
+            print(f"Default context size set to {args.value}")
+        except ValueError:
+            print(f"Error: {args.value} is not a valid integer", file=sys.stderr)
+    else:
+        print(f"Error: unknown key {args.key}", file=sys.stderr)
 
 
 def list_local_models():
@@ -956,6 +992,7 @@ def main():
         cp_parser = subparsers.add_parser("cp", help="Copy model")
         mv_parser = subparsers.add_parser("mv", help="Move/rename model")
         du_parser = subparsers.add_parser("du", help="Show disk usage")
+        set_parser = subparsers.add_parser("set", help="Set configuration")
         ap.add_argument(
             "--version", action="version", version=f"%(prog)s {__version__}"
         )
@@ -1014,7 +1051,7 @@ def main():
         return
 
     # Check for subcommands
-    known_subs = ["ls", "download", "rm", "info", "cp", "mv", "du"]
+    known_subs = ["ls", "download", "rm", "info", "cp", "mv", "du", "set"]
     use_subcommand = len(sys.argv) > 1 and sys.argv[1] in known_subs
 
     if use_subcommand:
@@ -1051,6 +1088,10 @@ def main():
 
         du_parser = subparsers.add_parser("du", help="Show disk usage")
         du_parser.add_argument("path", nargs="?", default=".", help="Path to check")
+
+        set_parser = subparsers.add_parser("set", help="Set configuration")
+        set_parser.add_argument("key", help="Configuration key")
+        set_parser.add_argument("value", help="Configuration value")
 
         ap.add_argument(
             "--version", action="version", version=f"%(prog)s {__version__}"
@@ -1119,6 +1160,11 @@ def main():
         args.subcommand = "check"
 
     if args.subcommand == "check":
+        if args.context is None:
+            cfg = load_config()
+            if "ctx" in cfg:
+                args.context = cfg["ctx"]
+
         quants = list(QUANTS.keys()) if args.all_quants else DEFAULT_QUANTS
 
         # ── Detect ──
@@ -1504,6 +1550,8 @@ def main():
             handle_mv(args)
         elif args.subcommand == "du":
             handle_du(args)
+        elif args.subcommand == "set":
+            handle_set(args)
         return
 
 

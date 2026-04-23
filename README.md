@@ -20,6 +20,7 @@ clanker info <file>
 clanker cp <src> <dest>
 clanker mv <src> <dest>
 clanker du
+clanker set <key> <value>
 ```
 
 ## local storage
