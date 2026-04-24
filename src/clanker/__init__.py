@@ -131,12 +131,12 @@ UD_ALIASES = {
 
 
 def resolve_quant(quant_key):
-    """Returns the base quant for a UD key, or the key itself."""
+    # whatever, just map the UD keys to something i can actually use
     return UD_ALIASES.get(quant_key, quant_key)
 
 
 def get_bpw(quant_key):
-    """Get bpw for a quant key, resolving UD aliases."""
+    # i hate how many of these quants exist now
     base = resolve_quant(quant_key)
     return QUANTS.get(base, None)
 
@@ -200,20 +200,21 @@ def detect_gpus():
                 stderr=subprocess.DEVNULL,
             )
             for ln in o.strip().splitlines():
-                p = [x.strip() for x in ln.split(",")]
-                if len(p) >= 2:
+                gpu_data = [x.strip() for x in ln.split(",")]
+                if len(gpu_data) >= 2:
                     try:
-                        mb = float(p[1])
-                    except ValueError:
+                        vram_mb = float(gpu_data[1])
+                        gpus.append(
+                            dict(name=gpu_data[0], vram_gb=round(vram_mb / 1024, 1), kind="nvidia")
+                        )
+                    except (ValueError, IndexError):
                         continue
-                    gpus.append(
-                        dict(name=p[0], vram_gb=round(mb / 1024, 1), kind="nvidia")
-                    )
         except Exception:
             pass
 
-    # ── AMD (sysfs on Linux) ──
-    if platform.system() == "Linux":
+    # amd. why is this so difficult.
+    is_linux = platform.system() == "Linux"
+    if is_linux:
         drm = "/sys/class/drm"
         try:
             for d in sorted(os.listdir(drm)):
@@ -283,40 +284,71 @@ def detect_gpus():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 
-def default_overhead(kind, mem_gb):
-    # memory overhead for kv-cache, cuda/metal context, and os.
-    # i have no idea if these numbers are correct.
+def get_oh_values(kind):
+    # i'm just guessing at these numbers at this point
     if kind == "apple":
-        return max(4.0, mem_gb * 0.10)  # macOS keeps its share
+        return 4.0, 0.3
     if kind in ("nvidia", "amd"):
-        return 2.0  # CUDA/ROCm context + KV cache
+        return 2.0 + RUNTIME_OVERHEAD_GB, 0.25
     if kind == "hybrid":
-        return 4.0  # VRAM overhead + RAM overhead
-    return 3.0  # CPU/RAM: OS + runtime
+        # hybrid is a mess. base for both vram and ram.
+        v_base = 2.0 + RUNTIME_OVERHEAD_GB
+        r_base = 3.0
+        return v_base + r_base, 0.35
+    return 3.0, 0.5
 
 
-# additional runtime overhead beyond model weights (KV cache, buffers, etc.)
-# this is what actually gets used at runtime, separate from the 2GB base overhead
+def default_overhead(kind, mem_gb=0):
+    # just give me the default.
+    base, _ = get_oh_values(kind)
+    return base
+
+
+# i have no idea if these numbers are actually correct.
 RUNTIME_OVERHEAD_GB = (
-    1.5  # accounts for KV cache (~800MB) + compute buffers (~500MB) + misc
+    1.5  # kv cache + buffers + magic
 )
 
 
 def max_billions(mem_gb, quant, overhead_gb):
-    # max model size (billion params) that fits at given quantization.
-    # math. unfortunately necessary.
+    # i hate how often i have to calculate this
     bpw = get_bpw(quant)
     avail = mem_gb - overhead_gb
-    return max(0.0, avail * 8.0 / bpw)
+    if avail <= 0:
+        return 0.0
+    return avail * 8.0 / bpw
 
 
 def make_url(max_b):
-    # huggingface model search url. pray it doesn't rate limit.
+    # please don't rate limit me again
     cap = max(1, math.floor(max_b))
     return (
         f"https://huggingface.co/models"
         f"?num_parameters=max:{cap}B&apps=llama.cpp&sort=trending"
     )
+
+
+def compute_max_context(mode, model_size_gb, vram_gb, ram_gb, gpu_kind=None):
+    # rough math because i don't have all day
+    mode_kind = mode.lower()
+    if mode_kind == "vram":
+        mode_kind = gpu_kind or "nvidia"
+    elif mode_kind == "ram":
+        mode_kind = "ram"
+
+    base_oh, ctx_factor = get_oh_values(mode_kind)
+    
+    if mode_kind == "hybrid":
+        ctx_available = vram_gb + ram_gb
+    elif mode_kind == "ram":
+        ctx_available = ram_gb
+    else:
+        ctx_available = vram_gb
+
+    rem = ctx_available - base_oh - model_size_gb
+    if rem <= 0:
+        return 0
+    return int((rem / ctx_factor) * 1024)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -383,40 +415,6 @@ def fetch_model_max_context(repo_id):
     return None
 
 
-def compute_max_context(mode, model_size_gb, vram_gb, ram_gb, gpu_kind=None):
-    # how many tokens can we even fit. rough math.
-    if mode == "VRAM":
-        if gpu_kind is None:
-            return None
-        available = vram_gb
-        base = default_overhead(gpu_kind, vram_gb)
-        if gpu_kind in ("nvidia", "amd"):
-            base += RUNTIME_OVERHEAD_GB
-        factor = 0.25 if gpu_kind in ("nvidia", "amd") else 0.30  # gpu
-    elif mode == "RAM":
-        available = ram_gb
-        base = 3.0  # cpu overhead
-        factor = 0.5
-    elif mode == "Hybrid":
-        if gpu_kind is None:
-            return None
-        available = vram_gb + ram_gb
-        vram_base = default_overhead(gpu_kind, vram_gb)
-        if gpu_kind in ("nvidia", "amd"):
-            vram_base += RUNTIME_OVERHEAD_GB
-        ram_base = 3.0
-        base = vram_base + ram_base
-        factor = 0.35  # split memory
-    else:
-        return None
-
-    remaining = available - base - model_size_gb
-    if remaining <= 0:
-        return 0  # no room for context at all
-    max_tokens = int((remaining / factor) * 1024)
-    return max_tokens
-
-
 def fetch_gguf_files(repo_id):
     # fetch gguf file info from huggingface. api, please work.
     api_url = f"https://huggingface.co/api/models/{repo_id}/tree/main"
@@ -440,7 +438,7 @@ def fetch_gguf_files(repo_id):
         # skip mmproj files
         if "mmproj" in path.lower():
             continue
-        size_bytes = item.get("size", 0)
+        size_bytes = node.get("size", 0)
         size_gb = size_bytes / (1024**3)
         gguf_files.append(
             {
@@ -598,16 +596,18 @@ def print_report(sources, quants, oh_fn):
 
 
 def build_sources(ram, gpus, cpu_only=False):
-    # build the list of memory sources to evaluate.
-    # this logic is confusing even to me.
+    # i hate how many of these sources i have to track
     sources = []
 
     if not cpu_only and gpus:
-        # Get main GPU (first discrete GPU)
-        discrete = [g for g in gpus if g["kind"] in ("nvidia", "amd")]
+        # get main gpu
+        discrete = []
+        for g in gpus:
+            if g["kind"] in ("nvidia", "amd"):
+                discrete.append(g)
+
         if discrete:
             main_gpu = discrete[0]
-            # VRAM column - single main GPU
             sources.append(
                 dict(
                     tag="VRAM",
@@ -616,19 +616,23 @@ def build_sources(ram, gpus, cpu_only=False):
                     kind=main_gpu["kind"],
                 )
             )
-            # Hybrid column - VRAM + RAM
             if ram:
                 hybrid_mem = main_gpu["vram_gb"] + ram
                 sources.append(
                     dict(tag="Hybrid", name=f"VRAM+RAM", mem=hybrid_mem, kind="hybrid")
                 )
 
-    # Show RAM column unless Apple unified (which IS the RAM)
-    has_apple = any(g["kind"] == "apple" for g in gpus) if gpus else False
+    # apple unified stuff
+    has_apple = False
+    if gpus:
+        for g in gpus:
+            if g["kind"] == "apple":
+                has_apple = True
+                break
+
     if ram and (cpu_only or not has_apple):
         sources.append(dict(tag="RAM", name="System RAM", mem=ram, kind="ram"))
 
-    # Fallback
     if not sources and ram:
         sources.append(dict(tag="RAM", name="System RAM", mem=ram, kind="ram"))
 
@@ -724,30 +728,43 @@ def find_best_fit_for_mode(
     return None, None, 0, 0
 
 
-def recommend_mode(vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files):
+def recommend_mode(vram_gb, ram_gb, gguf_files, oh_fn, gpu_kind=None):
     # determine recommended mode and quant.
     # 1. check if any 4-bit quant fits in vram
     # 2. if vram fails, check hybrid
     # 3. fall back to ram-only
     # returns (mode, file, quant, size_gb, max_b)
-    # this algorithm is probably wrong but it sounds reasonable.
-    # try vram first
+
+    # 1. try vram first
+    v_oh = oh_fn(gpu_kind or "vram", vram_gb)
+    if gpu_kind in ("nvidia", "amd"):
+        v_oh += RUNTIME_OVERHEAD_GB
+    
     vram_file, vram_quant, vram_size, vram_max = find_best_fit_for_mode(
-        gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "vram"
+        gguf_files, vram_gb, v_oh, ram_gb, 0, "vram"
     )
     if vram_file:
         return "VRAM", vram_file, vram_quant, vram_size, vram_max
 
-    # try hybrid
+    # 2. try hybrid
+    h_oh = oh_fn("hybrid", vram_gb + ram_gb)
+    h_v_oh = 0
+    if gpu_kind:
+        h_v_oh = default_overhead(gpu_kind, vram_gb)
+        if gpu_kind in ("nvidia", "amd"):
+            h_v_oh += RUNTIME_OVERHEAD_GB
+    h_r_oh = h_oh - h_v_oh
+
     hybrid_file, hybrid_quant, hybrid_size, hybrid_max = find_best_fit_for_mode(
-        gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "hybrid"
+        gguf_files, vram_gb, h_v_oh, ram_gb, h_r_oh, "hybrid"
     )
     if hybrid_file:
         return "Hybrid", hybrid_file, hybrid_quant, hybrid_size, hybrid_max
 
-    # fall back to ram
+    # 3. fall back to ram
+    r_oh = oh_fn("ram", ram_gb)
     ram_file, ram_quant, ram_size, ram_max = find_best_fit_for_mode(
-        gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "ram"
+        gguf_files, 0, 0, ram_gb, r_oh, "ram"
     )
     if ram_file:
         return "RAM", ram_file, ram_quant, ram_size, ram_max
@@ -1159,13 +1176,19 @@ def main():
         args = ap.parse_args()
         args.subcommand = "check"
 
-    if args.subcommand == "check":
+    if args.subcommand == "check" or args.model:
         if args.context is None:
             cfg = load_config()
             if "ctx" in cfg:
                 args.context = cfg["ctx"]
+            elif args.model:
+                # if model specified but no context, try to get native context
+                repo_id, _ = parse_model_id(args.model)
+                native_ctx = fetch_model_max_context(repo_id)
+                if native_ctx:
+                    args.context = native_ctx
 
-        quants = list(QUANTS.keys()) if args.all_quants else DEFAULT_QUANTS
+    if args.subcommand == "check":
 
         # ── Detect ──
         ram = detect_ram()
@@ -1187,19 +1210,9 @@ def main():
             fixed = args.overhead
             oh_fn = lambda kind, mem: fixed
         elif context_len is not None:
-            # each 1K tokens adds ~0.25GB for GPU, ~0.5GB for CPU
-            ctx_overhead = (context_len / 1024) * 0.25
-
             def oh_fn(kind, mem):
-                base = default_overhead(kind, mem)
-                if kind == "apple":
-                    return base + (context_len / 1024) * 0.3  # metal is a bit more
-                elif kind in ("nvidia", "amd"):
-                    return base + (context_len / 1024) * 0.25
-                elif kind == "hybrid":
-                    return base + (context_len / 1024) * 0.35  # both VRAM and RAM
-                else:
-                    return base + (context_len / 1024) * 0.5  # CPU/RAM
+                base, factor = get_oh_values(kind)
+                return base + (context_len / 1024) * factor
         else:
             oh_fn = default_overhead
 
@@ -1234,8 +1247,8 @@ def main():
             # get hardware info
             ram_gb = ram if ram else 0
             vram_gb = 0
-            vram_overhead = 2.0
-            ram_overhead = 3.0
+            vram_overhead = oh_fn("vram", 0) # default if no gpu
+            ram_overhead = oh_fn("ram", ram_gb)
 
             # find primary GPU (first one or highest VRAM)
             gpu_source = None
@@ -1249,10 +1262,22 @@ def main():
 
             if gpu_source:
                 vram_gb = gpu_source["mem"]
+                # For VRAM-only mode, context is in VRAM
                 vram_overhead = oh_fn(gpu_source["kind"], gpu_source["mem"])
-                # add runtime overhead for GPU (KV cache, compute buffers, etc.)
                 if gpu_source["kind"] in ("nvidia", "amd"):
                     vram_overhead += RUNTIME_OVERHEAD_GB
+
+            # For Hybrid mode, context overhead is often split or more efficient
+            # we'll use a dedicated hybrid overhead calculation
+            h_oh = oh_fn("hybrid", vram_gb + ram_gb)
+            # we need to split this for find_best_fit_for_mode which expects two values.
+            # let's give the GPU its base overhead and put the rest on RAM.
+            h_vram_oh = 0
+            if gpu_source:
+                h_vram_oh = default_overhead(gpu_source["kind"], vram_gb)
+                if gpu_source["kind"] in ("nvidia", "amd"):
+                    h_vram_oh += RUNTIME_OVERHEAD_GB
+            h_ram_oh = h_oh - h_vram_oh
 
             # get all three options
             options = []
@@ -1260,7 +1285,7 @@ def main():
             # RAM-only option
             if ram_gb > 0:
                 ram_file, ram_quant, ram_size, ram_max = find_best_fit_for_mode(
-                    gguf_files, vram_gb, vram_overhead, ram_gb, ram_overhead, "ram"
+                    gguf_files, 0, 0, ram_gb, ram_overhead, "ram"
                 )
                 if ram_file:
                     options.append(
@@ -1295,9 +1320,9 @@ def main():
                     find_best_fit_for_mode(
                         gguf_files,
                         vram_gb,
-                        vram_overhead,
+                        h_vram_oh,
                         ram_gb,
-                        ram_overhead,
+                        h_ram_oh,
                         "hybrid",
                     )
                 )
@@ -1324,8 +1349,9 @@ def main():
                     options = filtered
             else:
                 # auto-recommend based on algorithm
+                gpu_kind = gpu_source["kind"] if gpu_source else None
                 rec_mode, _, _, _, _ = recommend_mode(
-                    vram_gb, vram_overhead, ram_gb, ram_overhead, gguf_files
+                    vram_gb, ram_gb, gguf_files, oh_fn, gpu_kind
                 )
 
             if not options:
