@@ -309,6 +309,44 @@ RUNTIME_OVERHEAD_GB = (
     1.5  # kv cache + buffers + magic
 )
 
+KV_QUANT_FACTORS = {
+    "f32": 2.0,
+    "f16": 1.0,
+    "bf16": 1.0,
+    "q8_0": 0.5,
+    "q5_1": 0.35,
+    "q5_0": 0.35,
+    "q4_1": 0.3,
+    "iq4_nl": 0.3,
+    "q4_0": 0.28,
+}
+
+def get_kv_factor(ctk, ctv):
+    # average factor for k and v. why are there so many options.
+    fk = KV_QUANT_FACTORS.get(ctk, 1.0)
+    fv = KV_QUANT_FACTORS.get(ctv, 1.0)
+    return (fk + fv) / 2.0
+
+def get_oh_values(kind, ctk=None, ctv=None):
+    # i'm just guessing at these numbers at this point. nobody actually knows.
+    kv_f = get_kv_factor(ctk, ctv)
+    if kind == "apple":
+        return 4.0, 0.3 * kv_f
+    if kind in ("nvidia", "amd"):
+        # base 2.0 + 1.5 overhead. seems right enough.
+        return 2.0 + RUNTIME_OVERHEAD_GB, 0.25 * kv_f
+    if kind == "hybrid":
+        v_base = 2.0 + RUNTIME_OVERHEAD_GB
+        r_base = 3.0
+        return v_base + r_base, 0.35 * kv_f
+    return 3.0, 0.5 * kv_f
+
+
+def default_overhead(kind, mem_gb=0, ctk=None, ctv=None):
+    # just give me the default.
+    base, _ = get_oh_values(kind, ctk, ctv)
+    return base
+
 
 def max_billions(mem_gb, quant, overhead_gb):
     # i hate how often i have to calculate this
@@ -328,7 +366,7 @@ def make_url(max_b):
     )
 
 
-def compute_max_context(mode, model_size_gb, vram_gb, ram_gb, gpu_kind=None):
+def compute_max_context(mode, model_size_gb, vram_gb, ram_gb, gpu_kind=None, ctk=None, ctv=None):
     # rough math because i don't have all day
     mode_kind = mode.lower()
     if mode_kind == "vram":
@@ -336,7 +374,7 @@ def compute_max_context(mode, model_size_gb, vram_gb, ram_gb, gpu_kind=None):
     elif mode_kind == "ram":
         mode_kind = "ram"
 
-    base_oh, ctx_factor = get_oh_values(mode_kind)
+    base_oh, ctx_factor = get_oh_values(mode_kind, ctk, ctv)
     
     if mode_kind == "hybrid":
         ctx_available = vram_gb + ram_gb
@@ -1040,6 +1078,46 @@ def main():
             metavar="N",
             help="set context length (adds overhead: ~0.25GB per 1K tokens)",
         )
+        ap.add_argument(
+            "--preset",
+            choices=["default", "agentic-coding", "speed", "memory"],
+            default=None,
+            help="Apply a preset of optimized flags",
+        )
+        ap.add_argument(
+            "--fa",
+            choices=["on", "off", "auto"],
+            default="auto",
+            help="Flash Attention (default: auto)",
+        )
+        ap.add_argument(
+            "--mlock", action="store_true", help="Force model into RAM"
+        )
+        ap.add_argument(
+            "--numa",
+            choices=["distribute", "isolate", "numactl"],
+            default=None,
+            help="Enable NUMA optimizations",
+        )
+        ap.add_argument(
+            "--ctk",
+            choices=["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
+            default=None,
+            help="KV cache quantization for K",
+        )
+        ap.add_argument(
+            "--ctv",
+            choices=["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
+            default=None,
+            help="KV cache quantization for V",
+        )
+        ap.add_argument(
+            "--threads",
+            "-t",
+            type=int,
+            default=None,
+            help="Number of threads to use",
+        )
         ap.add_argument("--json", action="store_true", help="output JSON")
         ap.add_argument(
             "--quant",
@@ -1146,6 +1224,46 @@ def main():
             metavar="N",
             help="set context length (adds overhead: ~0.25GB per 1K tokens)",
         )
+        ap.add_argument(
+            "--preset",
+            choices=["default", "agentic-coding", "speed", "memory"],
+            default=None,
+            help="Apply a preset of optimized flags",
+        )
+        ap.add_argument(
+            "--fa",
+            choices=["on", "off", "auto"],
+            default="auto",
+            help="Flash Attention (default: auto)",
+        )
+        ap.add_argument(
+            "--mlock", action="store_true", help="Force model into RAM"
+        )
+        ap.add_argument(
+            "--numa",
+            choices=["distribute", "isolate", "numactl"],
+            default=None,
+            help="Enable NUMA optimizations",
+        )
+        ap.add_argument(
+            "--ctk",
+            choices=["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
+            default=None,
+            help="KV cache quantization for K",
+        )
+        ap.add_argument(
+            "--ctv",
+            choices=["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
+            default=None,
+            help="KV cache quantization for V",
+        )
+        ap.add_argument(
+            "--threads",
+            "-t",
+            type=int,
+            default=None,
+            help="Number of threads to use",
+        )
         ap.add_argument("--json", action="store_true", help="output JSON")
         ap.add_argument(
             "--quant",
@@ -1176,12 +1294,12 @@ def main():
         args = ap.parse_args()
         args.subcommand = "check"
 
-    if args.subcommand == "check" or args.model:
+    if args.subcommand == "check" or getattr(args, "model", None):
         if args.context is None:
             cfg = load_config()
             if "ctx" in cfg:
                 args.context = cfg["ctx"]
-            elif args.model:
+            elif getattr(args, "model", None):
                 # if model specified but no context, try to get native context
                 repo_id, _ = parse_model_id(args.model)
                 native_ctx = fetch_model_max_context(repo_id)
@@ -1211,13 +1329,13 @@ def main():
             oh_fn = lambda kind, mem: fixed
         elif context_len is not None:
             def oh_fn(kind, mem):
-                base, factor = get_oh_values(kind)
+                base, factor = get_oh_values(kind, args.ctk, args.ctv)
                 return base + (context_len / 1024) * factor
         else:
-            oh_fn = default_overhead
+            oh_fn = lambda kind, mem: default_overhead(kind, mem, args.ctk, args.ctv)
 
         # ── Output ──
-        if not args.model:
+        if not getattr(args, "model", None):
             if args.json:
                 data = json_report(sources, quants, oh_fn, ram, gpus)
                 json.dump(data, sys.stdout, indent=2)
@@ -1226,7 +1344,7 @@ def main():
                 print_report(sources, quants, oh_fn)
 
         # ── Model-specific output ──
-        if args.model:
+        if getattr(args, "model", None):
             repo_id, requested_quant = parse_model_id(args.model)
 
             # fetch GGUF files
@@ -1389,7 +1507,25 @@ def main():
                     print(f"  {hf_link}")
             print()
 
-            # figure out which quant to use for the server command
+            # resolve presets. i hate how many flags llama.cpp has.
+            preset_flags = []
+            if args.preset == "agentic-coding":
+                if args.fa == "auto": args.fa = "on"
+                if args.ctk is None: args.ctk = "q8_0"
+                if args.ctv is None: args.ctv = "q8_0"
+                if args.context is None: args.context = 32768
+                preset_flags.extend(["--temp", "0.0"])
+            elif args.preset == "speed":
+                if args.fa == "auto": args.fa = "on"
+                preset_flags.extend(["--batch-size", "2048", "--ubatch-size", "512"])
+            elif args.preset == "memory":
+                if args.fa == "auto": args.fa = "on"
+                if args.ctk is None: args.ctk = "q4_0"
+                if args.ctv is None: args.ctv = "q4_0"
+                if args.context is None: args.context = 4096
+                args.mlock = True
+
+            # which quant are we using? i don't know, let's pick one.
             serve_quant = None
             if rec_mode:
                 rec_opt = next((o for o in options if o["mode"] == rec_mode), None)
@@ -1398,13 +1534,28 @@ def main():
             if not serve_quant:
                 serve_quant = options[0]["quant"]
 
-            # build the llama-server command
+            # building the command. hope this works.
             hf_tag = f"{repo_id}:{serve_quant}"
             server_cmd = ["llama-server", "-hf", hf_tag]
+            
+            if args.fa != "auto":
+                server_cmd.extend(["--flash-attn", args.fa])
+            if args.mlock:
+                server_cmd.append("--mlock")
+            if args.numa:
+                server_cmd.extend(["--numa", args.numa])
+            if args.ctk:
+                server_cmd.extend(["--cache-type-k", args.ctk])
+            if args.ctv:
+                server_cmd.extend(["--cache-type-v", args.ctv])
+            if args.threads:
+                server_cmd.extend(["--threads", str(args.threads)])
+            
+            server_cmd.extend(preset_flags)
 
             print("  ─── Server Command " + "─" * 33)
             print()
-            print(f"  llama-server -hf {hf_tag}")
+            print(f"  {' '.join(server_cmd)}")
             print()
 
             # only prompt if stdout is a terminal
@@ -1434,7 +1585,7 @@ def main():
                         model_size_gb = selected_opt["size"]
                         gpu_kind = gpu_source["kind"] if gpu_source else None
                         max_ctx = compute_max_context(
-                            selected_mode, model_size_gb, vram_gb, ram_gb, gpu_kind
+                            selected_mode, model_size_gb, vram_gb, ram_gb, gpu_kind, args.ctk, args.ctv
                         )
                         if max_ctx is not None and effective_ctx > max_ctx:
                             if max_ctx < 1:
@@ -1481,7 +1632,7 @@ def main():
                     model_size_gb = selected_opt["size"]
                     gpu_kind = gpu_source["kind"] if gpu_source else None
                     max_ctx = compute_max_context(
-                        selected_mode, model_size_gb, vram_gb, ram_gb, gpu_kind
+                        selected_mode, model_size_gb, vram_gb, ram_gb, gpu_kind, args.ctk, args.ctv
                     )
                     if max_ctx is not None and effective_ctx > max_ctx:
                         if max_ctx < 1:
