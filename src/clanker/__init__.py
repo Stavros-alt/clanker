@@ -1334,7 +1334,8 @@ def main():
         else:
             oh_fn = lambda kind, mem: default_overhead(kind, mem, args.ctk, args.ctv)
 
-        # ── Output ──
+        # output. finally.
+        quants = QUANTS.keys() if args.all_quants else DEFAULT_QUANTS
         if not getattr(args, "model", None):
             if args.json:
                 data = json_report(sources, quants, oh_fn, ram, gpus)
