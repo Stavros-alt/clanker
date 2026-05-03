@@ -10,3 +10,9 @@ dist/
 uv.lock
 .DS_Store
 .directory
+*.log
+*.tmp
+.pytest_cache/
+.coverage
+coverage.json
+.ruff_cache/

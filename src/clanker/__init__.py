@@ -1295,7 +1295,7 @@ def main():
         args.subcommand = "check"
 
     if args.subcommand == "check" or getattr(args, "model", None):
-        if args.context is None:
+        if getattr(args, "context", None) is None:
             cfg = load_config()
             if "ctx" in cfg:
                 args.context = cfg["ctx"]
@@ -1529,10 +1529,13 @@ def main():
             # which quant are we using? i don't know, let's pick one.
             serve_quant = None
             if rec_mode:
-                rec_opt = next((o for o in options if o["mode"] == rec_mode), None)
-                if rec_opt:
-                    serve_quant = rec_opt["quant"]
-            if not serve_quant:
+                # i'm tired of these one-liners. let's just use a loop.
+                for option in options:
+                    if option["mode"] == rec_mode:
+                        serve_quant = option["quant"]
+                        break
+            
+            if not serve_quant and options:
                 serve_quant = options[0]["quant"]
 
             # building the command. hope this works.
@@ -1575,9 +1578,10 @@ def main():
                 if effective_ctx is not None:
                     selected_opt = None
                     if rec_mode:
-                        selected_opt = next(
-                            (o for o in options if o["mode"] == rec_mode), None
-                        )
+                        for option in options:
+                            if option["mode"] == rec_mode:
+                                selected_opt = option
+                                break
                     else:
                         selected_opt = options[0] if options else None
 
@@ -1622,9 +1626,10 @@ def main():
             if effective_ctx is not None:
                 selected_opt = None
                 if rec_mode:
-                    selected_opt = next(
-                        (o for o in options if o["mode"] == rec_mode), None
-                    )
+                    for option in options:
+                        if option["mode"] == rec_mode:
+                            selected_opt = option
+                            break
                 else:
                     selected_opt = options[0] if options else None
 
@@ -1660,12 +1665,13 @@ def main():
                             print(f"  Maximum supported: {max_ctx:,} tokens.")
                         print()
                         suggestions = []
-                        for cand in [4096, 8192, 16384, 32768, 65536, 131072, 262144]:
-                            if cand <= max_ctx:
-                                suggestions.append(cand)
-                        suggestions = (
-                            suggestions[-2:] if len(suggestions) > 2 else suggestions
-                        )
+                        for candidate in [4096, 8192, 16384, 32768, 65536, 131072, 262144]:
+                            if candidate <= max_ctx:
+                                suggestions.append(candidate)
+                        
+                        # grab the last two suggestions. or fewer.
+                        suggestions = suggestions[-2:]
+
                         if suggestions:
                             print("  To increase context at the cost of speed, try:")
                             for s in suggestions:
@@ -1676,6 +1682,7 @@ def main():
                                 print(f"    --ctx {s}   ({hr})")
                             print()
                         try:
+                            # ask the user. i hate interactive stuff.
                             answer = (
                                 input(f"  Continue with {max_ctx:,} tokens? [Y/n] ")
                                 .strip()
@@ -1696,6 +1703,7 @@ def main():
                 os.execvp("llama-server", server_cmd)
 
             try:
+                # one last prompt.
                 answer = (
                     input("  Start local server with web UI? [y/N] ").strip().lower()
                 )
